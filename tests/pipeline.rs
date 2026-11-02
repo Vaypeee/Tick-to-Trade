@@ -12,9 +12,15 @@
 
 use std::path::Path;
 
-use tick_to_trade::analysis::{
-    align, book, edge, flow, reference_asset,
-    replay::{self, Kind},
+use tick_to_trade::{
+    analysis::{
+        align, book, edge, flow, reference_asset,
+        replay::{self, Kind},
+    },
+    strategy::{
+        decision::{Limits, Touch},
+        paper::{self, Signal},
+    },
 };
 
 const FIXTURE: &str = "tests/fixtures/synthetic-market.jsonl";
@@ -140,4 +146,139 @@ fn fees_only_ever_make_it_worse() {
     let free = edge::study(&surges, &quotes, &asset, 0, HOLD_NS, 0.0).total_net();
     let charged = edge::study(&surges, &quotes, &asset, 0, HOLD_NS, 0.002).total_net();
     assert!(charged < free);
+}
+
+fn limits() -> Limits {
+    Limits {
+        min_edge: 0.0,
+        max_position: 10.0,
+        size: 10.0,
+        max_spread: 0.10,
+        require_touch_depth: false,
+        fee_fraction: 0.0,
+        max_signal_age_ns: 1_000_000_000,
+    }
+}
+
+fn signals_and_touch() -> (Vec<Signal>, Vec<align::Quote>, String) {
+    let (records, quotes, asset) = load();
+    let (trades, _) = flow::trades(&records, &quotes);
+    let surges = flow::surges(&trades, &asset, 5_000_000_000, 5_000.0);
+    let signals = surges
+        .iter()
+        .map(|surge| Signal {
+            at_unix_ns: surge.at_unix_ns,
+            rose: surge.signed_size > 0.0,
+        })
+        .collect();
+    (signals, quotes, asset)
+}
+
+fn touch_at(quotes: &[align::Quote], asset: &str, at: u64) -> Option<Touch> {
+    quotes
+        .iter()
+        .rev()
+        .find(|quote| quote.asset == asset && quote.at_unix_ns <= at)
+        .map(|quote| Touch {
+            bid: quote.bid,
+            ask: quote.ask,
+            bid_size: quote.bid_size,
+            ask_size: quote.ask_size,
+        })
+}
+
+#[test]
+fn the_rules_take_the_burst_and_the_books_balance() {
+    let (signals, quotes, asset) = signals_and_touch();
+    let touch = |at: u64| touch_at(&quotes, &asset, at);
+
+    let run = paper::run(&signals, touch, 0.10, 0, HOLD_NS, &limits());
+    assert_eq!(run.trades.len(), 1);
+
+    let trade = &run.trades[0];
+    // Bought the ask before the move, sold the bid after it.
+    assert_eq!(trade.entry, 0.42);
+    assert_eq!(trade.exit, 0.50);
+    assert!((run.net() - (0.50 - 0.42) * 10.0).abs() < 1e-9);
+    assert_eq!(run.wins(), 1);
+    assert_eq!(run.abandoned, 0);
+}
+
+#[test]
+fn an_expected_move_below_the_spread_is_refused_rather_than_taken() {
+    let (signals, quotes, asset) = signals_and_touch();
+    let touch = |at: u64| touch_at(&quotes, &asset, at);
+
+    // The touch is two cents wide, so a one-cent prediction cannot pay for
+    // the round trip however right it turns out to be.
+    let run = paper::run(&signals, touch, 0.01, 0, HOLD_NS, &limits());
+    assert!(run.trades.is_empty());
+    assert_eq!(run.refusals.get("edge below cost"), Some(&1));
+}
+
+#[test]
+fn the_sweep_finds_where_the_rules_start_paying() {
+    let (signals, quotes, asset) = signals_and_touch();
+    let touch = |at: u64| touch_at(&quotes, &asset, at);
+
+    let ladder = [0.005, 0.01, 0.02, 0.05, 0.10];
+    let results = paper::sweep(&signals, touch, &ladder, 0, HOLD_NS, &limits());
+
+    let profitable: Vec<f64> = results
+        .iter()
+        .filter(|(_, run)| run.net() > 0.0)
+        .map(|(expected, _)| *expected)
+        .collect();
+
+    // Everything above the crossing point pays, nothing below it does.
+    assert!(!profitable.is_empty());
+    let crossing = profitable[0];
+    assert!(
+        results
+            .iter()
+            .all(|(expected, run)| (*expected < crossing) == (run.net() <= 0.0))
+    );
+}
+
+#[test]
+fn a_late_reaction_is_refused_before_it_can_lose_money() {
+    let (signals, quotes, asset) = signals_and_touch();
+    let touch = |at: u64| touch_at(&quotes, &asset, at);
+
+    // The staleness rule fires first: ten seconds after the burst the signal
+    // is no longer one, whatever the price has done since.
+    let late = paper::run(
+        &signals,
+        touch,
+        0.10,
+        10 * 1_000_000_000,
+        HOLD_NS,
+        &limits(),
+    );
+    assert!(late.trades.is_empty());
+    assert_eq!(late.refusals.get("signal too old"), Some(&1));
+}
+
+#[test]
+fn without_the_staleness_rule_a_late_reaction_buys_the_top() {
+    let (signals, quotes, asset) = signals_and_touch();
+    let touch = |at: u64| touch_at(&quotes, &asset, at);
+
+    let mut permissive = limits();
+    permissive.max_signal_age_ns = u64::MAX;
+
+    let prompt = paper::run(&signals, touch, 0.10, 0, HOLD_NS, &permissive);
+    let late = paper::run(
+        &signals,
+        touch,
+        0.10,
+        10 * 1_000_000_000,
+        HOLD_NS,
+        &permissive,
+    );
+
+    assert!(prompt.net() > 0.0);
+    // Entering after the move and leaving once it faded gives back more than
+    // the spread, which is what the staleness rule exists to prevent.
+    assert!(late.net() < 0.0);
 }

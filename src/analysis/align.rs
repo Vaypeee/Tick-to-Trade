@@ -19,6 +19,10 @@ pub struct Quote {
     /// cannot say.
     pub bid: f64,
     pub ask: f64,
+    /// What is resting at the touch. A decision that ignores depth is a
+    /// decision to assume any size fills at the quoted price.
+    pub bid_size: f64,
+    pub ask_size: f64,
     pub mid: f64,
 }
 
@@ -312,6 +316,8 @@ mod tests {
             asset: "A".into(),
             bid: mid - 0.005,
             ask: mid + 0.005,
+            bid_size: 1_000.0,
+            ask_size: 1_000.0,
             mid,
         }
     }

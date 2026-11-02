@@ -89,6 +89,14 @@ impl Book {
         self.asks.keys().next().copied().map(price)
     }
 
+    pub fn best_bid_size(&self) -> f64 {
+        self.bids.values().next_back().copied().unwrap_or(0.0)
+    }
+
+    pub fn best_ask_size(&self) -> f64 {
+        self.asks.values().next().copied().unwrap_or(0.0)
+    }
+
     pub fn mid(&self) -> Option<f64> {
         Some((self.best_bid()? + self.best_ask()?) / 2.0)
     }
@@ -225,6 +233,8 @@ pub fn replay(records: &[Record]) -> (Vec<Quote>, Agreement) {
                     asset,
                     bid,
                     ask,
+                    bid_size: book.best_bid_size(),
+                    ask_size: book.best_ask_size(),
                     mid,
                 });
             }

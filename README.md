@@ -388,6 +388,40 @@ and `--horizon-secs` how long to wait for the market to follow a feed change.
 every change counts, and the tool prints which paths churn most, so the choice
 can be made from evidence about the feed rather than a guess.
 
+### Paper trading a recording
+
+```bash
+cargo run --release --bin paper -- \
+  --market data/recordings/polymarket-<unix>.jsonl
+```
+
+Replays the recording through the rules in `[decision]` and `[execution]`:
+signals from aggressive flow, entries that cross the spread, exits that cross
+it back, position limits, staleness, and a refusal to trade a book too wide or
+too thin.
+
+The one thing it cannot know is what a signal is worth, so it does not guess.
+The expected move is swept across a ladder and the table reports what each
+assumption would have produced:
+
+```
+        move  trades         net     won    drawdown
+       0.020       0           -
+       0.030       0           -
+       0.050       1      +0.800    100%       0.000
+
+  Break-even sits between 0.050 and the row above it
+```
+
+That is a more useful answer than any single number: it says how large a move
+a model would have to predict, correctly and on average, before these rules
+stop losing money. Refusals are reported by rule, so when nothing trades it is
+clear which constraint did it rather than leaving a silent zero.
+
+Positions are sequential — one at a time, opened on a signal and closed after
+the hold — because a backtest that can hold several overlapping positions
+hides which signal earned what.
+
 ### Running the pipeline
 
 ```bash
@@ -460,8 +494,8 @@ Ordered so that the hypothesis is tested before the fast system is built.
 - [x] Latency instrumentation of the recorder (HDR histograms) — fills §4
 - [ ] The same instrumentation along a live trading path, once one exists
 - [ ] First fair-value model, however crude
-- [ ] Decision layer with an explicit fee and spread model
-- [ ] Paper execution and simulated PnL
+- [x] Decision layer with an explicit fee and spread model
+- [x] Paper execution and simulated PnL over a recording
 - [ ] Feed comparison, measured; VPS regions only once latency is the binding constraint
 - [ ] Better fair-value model, measured against its latency cost
 

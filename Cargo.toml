@@ -7,6 +7,9 @@ description = "Low-latency event-driven inference pipeline for live sports predi
 license = "MIT"
 readme = "README.md"
 publish = false
+# Three binaries ship from this crate, so a bare `cargo run` needs to be told
+# which one it means. The pipeline entry point is the one the README runs.
+default-run = "tick-to-trade"
 
 [dependencies]
 anyhow = "1.0.104"

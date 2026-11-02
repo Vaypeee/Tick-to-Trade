@@ -234,6 +234,8 @@ mod tests {
             asset: "A".into(),
             bid,
             ask,
+            bid_size: 1_000.0,
+            ask_size: 1_000.0,
             mid: (bid + ask) / 2.0,
         }
     }

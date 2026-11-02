@@ -56,17 +56,29 @@ queue_capacity = 65536
 stats_interval_secs = 60
 
 [decision]
-# Minimum edge, in probability points, required before sending an order.
-# Must cover fees + half-spread + a safety margin.
+# Edge required BEYOND the round trip cost, in probability points. The cost
+# itself — a full spread crossed twice, plus fees on both legs — is computed
+# from the book, so this is the margin on top of it.
 min_edge = 0.03
-# Hard cap on exposure per market, in USDC.
+# Hard cap on exposure, in units.
 max_position = 50.0
+# Units per entry.
+size = 10.0
+# Refuse a book wider than this. Crossing it costs more than it is worth.
+max_spread = 0.05
+# Refuse when the touch cannot absorb the whole order. Walking the book is a
+# different, worse trade than the one that was evaluated.
+require_touch_depth = true
 # Abandon a signal older than this: a stale event is not an edge.
 max_signal_age_ms = 250
 
 [execution]
-# "paper" simulates fills and sends nothing. "live" sends real orders.
+# "paper" simulates fills and sends nothing. "live" sends real orders and is
+# not implemented.
 mode = "paper"
+# Taker fee on each leg, in basis points of notional. Leave at zero only if
+# the venue genuinely takes nothing.
+fee_bps = 0.0
 # Drop an order rather than chase the book beyond this many ticks.
 max_slippage_ticks = 2
 

@@ -11,4 +11,5 @@
 pub mod analysis;
 pub mod config;
 pub mod recorder;
+pub mod strategy;
 pub mod tls;

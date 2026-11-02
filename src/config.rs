@@ -25,7 +25,61 @@ pub struct Config {
     #[serde(default)]
     pub labels: Option<Labels>,
     #[serde(default)]
+    pub decision: DecisionLimits,
+    #[serde(default)]
+    pub execution: Execution,
+    #[serde(default)]
     pub recording: Recording,
+}
+
+/// The rules the decision layer applies. Defaults are deliberately cautious:
+/// a configuration that is missing should not become a configuration that
+/// trades everything.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct DecisionLimits {
+    /// Edge required beyond the round trip cost, in probability points.
+    pub min_edge: f64,
+    pub max_position: f64,
+    /// Units per entry.
+    pub size: f64,
+    /// Refuse a book wider than this.
+    pub max_spread: f64,
+    /// Refuse when the touch cannot absorb the whole order.
+    pub require_touch_depth: bool,
+    /// A signal older than this is stale.
+    pub max_signal_age_ms: u64,
+}
+
+impl Default for DecisionLimits {
+    fn default() -> Self {
+        Self {
+            min_edge: 0.03,
+            max_position: 50.0,
+            size: 10.0,
+            max_spread: 0.05,
+            require_touch_depth: true,
+            max_signal_age_ms: 250,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Execution {
+    /// "paper" simulates, "live" would send orders and is not implemented.
+    pub mode: String,
+    /// Taker fee on each leg, in basis points of notional.
+    pub fee_bps: f64,
+}
+
+impl Default for Execution {
+    fn default() -> Self {
+        Self {
+            mode: "paper".to_string(),
+            fee_bps: 0.0,
+        }
+    }
 }
 
 /// The spectator baseline: a local page whose buttons stamp the moment an
@@ -141,6 +195,21 @@ fn default_bind() -> String {
 }
 
 impl Config {
+    /// Checks the configuration is sufficient to *record* the market.
+    ///
+    /// Kept apart from validation because being well formed and being enough
+    /// for a particular job are different questions: replaying a recording
+    /// offline needs the trading rules and no subscription at all.
+    pub fn validate_for_recording(&self) -> Result<()> {
+        if self.polymarket.asset_ids.is_empty() {
+            bail!(
+                "`polymarket.asset_ids` is empty — there is nothing to record. \
+                 Outcome token ids come from the Gamma markets API."
+            );
+        }
+        Ok(())
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path).with_context(|| {
             format!(
@@ -159,17 +228,27 @@ impl Config {
         if !(url.starts_with("wss://") || url.starts_with("ws://")) {
             bail!("`polymarket.ws_url` must be a websocket URL, got `{url}`");
         }
-        if self.polymarket.asset_ids.is_empty() {
-            bail!(
-                "`polymarket.asset_ids` is empty — there is nothing to record. \
-                 Outcome token ids come from the Gamma markets API."
-            );
-        }
         if self.polymarket.ping_interval_secs == 0 {
             bail!("`polymarket.ping_interval_secs` must be greater than zero");
         }
         if self.recording.queue_capacity == 0 {
             bail!("`recording.queue_capacity` must be greater than zero");
+        }
+        let decision = &self.decision;
+        if decision.size <= 0.0 {
+            bail!("`decision.size` must be greater than zero");
+        }
+        if decision.max_position < decision.size {
+            bail!(
+                "`decision.max_position` is below `decision.size`, so no order could \
+                 ever be placed"
+            );
+        }
+        if !(decision.max_spread > 0.0 && decision.max_spread < 1.0) {
+            bail!("`decision.max_spread` is a probability width, so 0 < w < 1");
+        }
+        if self.execution.fee_bps < 0.0 {
+            bail!("`execution.fee_bps` cannot be negative");
         }
         if let Some(labels) = &self.labels {
             // The page is unauthenticated and its posts are written to disk,
@@ -261,12 +340,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_asset_ids() {
+    fn an_empty_subscription_is_a_recording_problem_not_a_parsing_one() {
         let raw = r#"
             [polymarket]
             ws_url = "wss://example.invalid/ws/market"
         "#;
-        assert!(parse(raw).is_err());
+        // Well formed, so it loads: an offline replay needs no subscription.
+        let config = parse(raw).unwrap();
+        // But it cannot be recorded with.
+        assert!(config.validate_for_recording().is_err());
+        assert!(parse(MINIMAL).unwrap().validate_for_recording().is_ok());
     }
 
     #[test]
@@ -365,6 +448,42 @@ buttons = []
             ))
             .is_err()
         );
+    }
+
+    #[test]
+    fn decision_limits_default_to_something_cautious() {
+        let config = parse(MINIMAL).unwrap();
+        assert_eq!(config.decision.min_edge, 0.03);
+        assert_eq!(config.decision.size, 10.0);
+        assert!(config.decision.require_touch_depth);
+        assert_eq!(config.execution.mode, "paper");
+        assert_eq!(config.execution.fee_bps, 0.0);
+    }
+
+    #[test]
+    fn reads_decision_limits_when_given() {
+        let raw = format!(
+            "{MINIMAL}\n[decision]\nmin_edge = 0.01\nsize = 5.0\nmax_position = 20.0\n\
+             [execution]\nfee_bps = 25.0\n"
+        );
+        let config = parse(&raw).unwrap();
+        assert_eq!(config.decision.min_edge, 0.01);
+        assert_eq!(config.decision.size, 5.0);
+        assert_eq!(config.execution.fee_bps, 25.0);
+    }
+
+    #[test]
+    fn rejects_limits_that_could_never_place_an_order() {
+        let raw = format!("{MINIMAL}\n[decision]\nsize = 100.0\nmax_position = 10.0\n");
+        assert!(parse(&raw).is_err());
+        let zero = format!("{MINIMAL}\n[decision]\nsize = 0.0\n");
+        assert!(parse(&zero).is_err());
+    }
+
+    #[test]
+    fn rejects_a_spread_limit_that_is_not_a_width() {
+        let raw = format!("{MINIMAL}\n[decision]\nmax_spread = 2.0\n");
+        assert!(parse(&raw).is_err());
     }
 
     #[test]

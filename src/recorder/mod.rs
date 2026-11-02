@@ -108,6 +108,9 @@ impl Feed {
 
 /// Records `feed` until `shutdown` flips to `true`, then drains and flushes.
 pub async fn run(feed: Feed, config: &Config, shutdown: watch::Receiver<bool>) -> Result<Outcome> {
+    if feed == Feed::Polymarket {
+        config.validate_for_recording()?;
+    }
     crate::tls::install_crypto_provider();
 
     // Anything that can fail on startup fails here, before a recording file
