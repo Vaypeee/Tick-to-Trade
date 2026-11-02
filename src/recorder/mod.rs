@@ -109,6 +109,14 @@ impl Feed {
 pub async fn run(feed: Feed, config: &Config, shutdown: watch::Receiver<bool>) -> Result<Summary> {
     crate::tls::install_crypto_provider();
 
+    // Anything that can fail on startup fails here, before a recording file
+    // exists. A half-started run that leaves an empty recording behind is a
+    // trap for whoever reads the directory later.
+    let listener = match feed {
+        Feed::Labels => Some(labels::bind(config).await?),
+        _ => None,
+    };
+
     let metadata = match feed {
         Feed::Polymarket => polymarket::metadata(config),
         Feed::Sports => sports::metadata(config)?,
@@ -129,10 +137,13 @@ pub async fn run(feed: Feed, config: &Config, shutdown: watch::Receiver<bool>) -
         shutdown.clone(),
     );
 
-    let outcome = match feed {
-        Feed::Polymarket => polymarket::run(config, &mut session, shutdown).await,
-        Feed::Sports => sports::run(config, &mut session, shutdown).await,
-        Feed::Labels => labels::run(config, &mut session, shutdown).await,
+    let outcome = match (feed, listener) {
+        (Feed::Polymarket, _) => polymarket::run(config, &mut session, shutdown).await,
+        (Feed::Sports, _) => sports::run(config, &mut session, shutdown).await,
+        (Feed::Labels, Some(listener)) => {
+            labels::run(config, listener, &mut session, shutdown).await
+        }
+        (Feed::Labels, None) => Err(anyhow::anyhow!("the label listener was not prepared")),
     };
     reporter.abort();
 

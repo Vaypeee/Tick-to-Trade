@@ -7,6 +7,7 @@
 pub mod align;
 pub mod book;
 pub mod diff;
+pub mod edge;
 pub mod flow;
 pub mod replay;
 

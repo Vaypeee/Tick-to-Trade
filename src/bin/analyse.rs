@@ -10,21 +10,37 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use tick_to_trade::analysis::{
     align::{self, Leads, Matching},
-    book, change_frequency, flow, observations, overlap_ns, presses, reference_asset,
+    book, change_frequency, edge, flow, observations, overlap_ns, presses, reference_asset,
     replay::{self, Record},
     span_ns,
 };
 
 const USAGE: &str = "\
-usage: analyse --market <file> --sports <file> [options]
+usage: analyse --market <file> [--sports <file> | --labels <file>] [options]
 
     --market <file>        a polymarket-*.jsonl recording
     --sports <file>        a sports-*.jsonl recording over the same window
-    --min-move <p>         mid move counting as a reaction (default: 0.02)
-    --horizon-secs <n>     how long to wait for one (default: 120)
+    --labels <file>        a labels-*.jsonl recording over the same window
+
+    --min-move <p>         mid move counting as a signal (default: 0.02)
+    --window-secs <n>      how far either side of a press to look for the
+                           nearest signal (default: 30)
+    --horizon-secs <n>     how long to wait for the market to follow a feed
+                           change (default: 120)
     --path <substring>     only treat changes under matching paths as events;
                            repeatable, default: every change counts
+
+    --surge-secs <n>       window over which taking is netted (default: 5)
+    --surge-size <n>       net size that counts as a surge; the default is
+                           5x the median trade size in the recording
+    --hold-secs <n>        how long a trial position is held (default: 30)
+    --fee-bps <n>          taker fee charged on each leg (default: 0)
+
     -h, --help             print this message
+
+With --labels: how far the order book ran ahead of an ordinary spectator.
+With --sports: how long after the feed showed something did the market move.
+With neither: what following the flow would have paid, against reaction delay.
 ";
 
 /// What the market recording is being compared against.
@@ -45,6 +61,8 @@ struct Args {
     window_secs: u64,
     surge_secs: u64,
     surge_size: Option<f64>,
+    hold_secs: u64,
+    fee_bps: f64,
     paths: Vec<String>,
 }
 
@@ -58,6 +76,8 @@ impl Default for Args {
             window_secs: 30,
             surge_secs: 5,
             surge_size: None,
+            hold_secs: 30,
+            fee_bps: 0.0,
             paths: Vec::new(),
         }
     }
@@ -95,6 +115,24 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Args>, String
                     .map_err(|_| format!("`--min-move` expects a number, got `{raw}`"))?;
                 if !(parsed.min_move > 0.0 && parsed.min_move < 1.0) {
                     return Err("`--min-move` is a probability move, so 0 < p < 1".into());
+                }
+            }
+            "--hold-secs" => {
+                let raw = args.next().ok_or("`--hold-secs` expects a value")?;
+                parsed.hold_secs = raw
+                    .parse()
+                    .map_err(|_| format!("`--hold-secs` expects a number, got `{raw}`"))?;
+                if parsed.hold_secs == 0 {
+                    return Err("`--hold-secs` must be greater than zero".into());
+                }
+            }
+            "--fee-bps" => {
+                let raw = args.next().ok_or("`--fee-bps` expects a value")?;
+                parsed.fee_bps = raw
+                    .parse()
+                    .map_err(|_| format!("`--fee-bps` expects a number, got `{raw}`"))?;
+                if parsed.fee_bps < 0.0 {
+                    return Err("`--fee-bps` cannot be negative".into());
                 }
             }
             "--surge-secs" => {
@@ -138,8 +176,8 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Args>, String
         }
     }
 
-    if parsed.market.as_os_str().is_empty() || parsed.against.is_none() {
-        return Err("`--market` and one of `--sports` or `--labels` are required".into());
+    if parsed.market.as_os_str().is_empty() {
+        return Err("`--market` is required".into());
     }
     Ok(Some(parsed))
 }
@@ -293,28 +331,138 @@ fn seconds_signed(nanos: i64) -> f64 {
     nanos as f64 / 1e9
 }
 
+/// Prints what the trading looked like and returns the bursts found in it.
+fn describe_flow(
+    market: &[Record],
+    quotes: &[align::Quote],
+    asset: &str,
+    args: &Args,
+) -> Vec<flow::Surge> {
+    let (executions, sides) = flow::trades(market, quotes);
+    let mine: Vec<&flow::Trade> = executions
+        .iter()
+        .filter(|trade| trade.asset == asset)
+        .collect();
+    let unclear = mine
+        .iter()
+        .filter(|trade| trade.taker == flow::Taker::Unclear)
+        .count();
+
+    println!(
+        "  {} trade(s) in that outcome, {unclear} of them inside the spread",
+        mine.len()
+    );
+    match sides.rate() {
+        Some(rate) => println!(
+            "  the `side` field agreed with where the trade printed on {:.1}% of {} classifiable trades",
+            rate * 100.0,
+            sides.checked
+        ),
+        None => println!("  no classifiable trade to check the `side` field against"),
+    }
+
+    let threshold = match args.surge_size {
+        Some(size) => size,
+        None => {
+            let mut sizes: Vec<f64> = mine.iter().map(|trade| trade.size).collect();
+            let value = median(&mut sizes)
+                .map(|value| value * 5.0)
+                .filter(|value| *value > 0.0)
+                .unwrap_or(1.0);
+            println!(
+                "  surge threshold {value:.0} (5x the median trade; set --surge-size to override)"
+            );
+            value
+        }
+    };
+
+    let window_ns = args.surge_secs.saturating_mul(1_000_000_000);
+    let bursts = flow::surges(&executions, asset, window_ns, threshold);
+    println!(
+        "  {} surge(s) of {threshold:.0} net within {}s",
+        bursts.len(),
+        args.surge_secs
+    );
+    bursts
+}
+
+/// Reports what following each surge would have paid, against how late you
+/// were to it.
+fn report_edge(surges: &[flow::Surge], quotes: &[align::Quote], asset: &str, args: &Args) {
+    println!("\n== What following the flow would have paid ==");
+    if surges.is_empty() {
+        println!("  No surge to trade. Nothing to say about the edge.");
+        return;
+    }
+
+    let fee = args.fee_bps / 10_000.0;
+    println!(
+        "  Holding {}s, crossing the spread both ways, {} bps per leg.",
+        args.hold_secs, args.fee_bps
+    );
+    println!("  Every fill is at the touch, so this is an upper bound: a thin");
+    println!("  book will not absorb size at those prices.");
+    println!(
+        "\n  {:>9}  {:>7}  {:>10}  {:>8}  {:>10}",
+        "react", "trials", "median", "won", "worst"
+    );
+
+    let hold_ns = args.hold_secs.saturating_mul(1_000_000_000);
+    for delay_ms in edge::REACTION_LADDER_MS {
+        let result = edge::study(
+            surges,
+            quotes,
+            asset,
+            delay_ms.saturating_mul(1_000_000),
+            hold_ns,
+            fee,
+        );
+        let trials = result.trials.len();
+        if trials == 0 {
+            println!("  {delay_ms:>7}ms  {:>7}  {:>10}", 0, "-");
+            continue;
+        }
+        println!(
+            "  {delay_ms:>7}ms  {trials:>7}  {:>+10.4}  {:>7.0}%  {:>+10.4}",
+            result.median_net().unwrap_or(0.0),
+            100.0 * result.wins() as f64 / trials as f64,
+            result.worst().unwrap_or(0.0),
+        );
+    }
+    println!("\n  Median is in probability points per unit of size, after costs.");
+    println!("  A median at or below zero means the move is already in the price");
+    println!("  by the time the surge is visible, and there is nothing to chase.");
+}
+
 fn analyse(args: &Args) -> Result<()> {
     let market = replay::read(&args.market)?;
-    let against = args.against.as_ref().expect("parsing requires one");
-    let other_path = match against {
-        Against::Sports(path) | Against::Labels(path) => path,
-    };
-    let other = replay::read(other_path)?;
-
     println!("== Recordings ==");
     println!("  {}", describe(&args.market, &market));
-    println!("  {}", describe(other_path, &other));
 
-    let (Some(market_span), Some(other_span)) = (span_ns(&market), span_ns(&other)) else {
-        bail!("one of the recordings is empty");
+    let other = match args.against.as_ref() {
+        Some(Against::Sports(path) | Against::Labels(path)) => {
+            let records = replay::read(path)?;
+            println!("  {}", describe(path, &records));
+            Some(records)
+        }
+        None => None,
     };
-    let Some((from, to)) = overlap_ns(market_span, other_span) else {
-        bail!(
-            "the recordings do not overlap in wall-clock time, so there is \
-             nothing to compare; record both at once"
-        );
+
+    let Some(market_span) = span_ns(&market) else {
+        bail!("the market recording is empty");
     };
-    println!("  overlap: {:.1} s", seconds(to - from));
+    if let Some(other) = &other {
+        let Some(other_span) = span_ns(other) else {
+            bail!("the comparison recording is empty");
+        };
+        let Some((from, to)) = overlap_ns(market_span, other_span) else {
+            bail!(
+                "the recordings do not overlap in wall-clock time, so there is \
+                 nothing to compare; record both at once"
+            );
+        };
+        println!("  overlap: {:.1} s", seconds(to - from));
+    }
 
     let (quotes, agreement) = book::replay(&market);
     println!("\n== Market ==");
@@ -335,8 +483,15 @@ fn analyse(args: &Args) -> Result<()> {
         println!("  every outcome of a market, or its book cannot be rebuilt");
     }
 
-    match against {
-        Against::Sports(_) => {
+    let Some(asset) =
+        reference_asset(&args.market).or_else(|| quotes.first().map(|quote| quote.asset.clone()))
+    else {
+        bail!("the market recording has no prices to work from");
+    };
+    println!("  reference outcome {}", &asset[..asset.len().min(16)]);
+
+    match (args.against.as_ref(), other) {
+        (Some(Against::Sports(_)), Some(other)) => {
             let found = observations(&other, &args.paths, 200);
             println!("\n== Sports feed ==");
             println!("  {} change(s) observed", found.len());
@@ -367,20 +522,12 @@ fn analyse(args: &Args) -> Result<()> {
             let matched = align::match_observations(&found, &quotes, args.min_move, horizon_ns);
             report(&matched, args.horizon_secs);
         }
-        Against::Labels(_) => {
+        (Some(Against::Labels(_)), Some(other)) => {
             let found = presses(&other);
             println!("\n== Spectator baseline ==");
             println!("  {} press(es)", found.len());
 
-            let Some(asset) = reference_asset(&args.market)
-                .or_else(|| quotes.first().map(|quote| quote.asset.clone()))
-            else {
-                bail!("the market recording has no prices to compare against");
-            };
-            println!("  reference outcome {}", &asset[..asset.len().min(16)]);
-
             let window_ns = args.window_secs.saturating_mul(1_000_000_000);
-
             println!("\n== What the market did, and when ==");
             let moves = align::significant_moves(&quotes, &asset, args.min_move);
             let matched = align::leads(&found, &align::move_signals(&moves), window_ns);
@@ -391,49 +538,21 @@ fn analyse(args: &Args) -> Result<()> {
                 moves.len(),
             );
 
-            let (executions, sides) = flow::trades(&market, &quotes);
-            let mine: Vec<&flow::Trade> = executions
-                .iter()
-                .filter(|trade| trade.asset == asset)
-                .collect();
-            let unclear = mine
-                .iter()
-                .filter(|trade| trade.taker == flow::Taker::Unclear)
-                .count();
-            println!(
-                "\n  {} trade(s) in that outcome, {unclear} of them inside the spread",
-                mine.len()
-            );
-            match sides.rate() {
-                Some(rate) => println!(
-                    "  the `side` field agreed with where the trade printed on {:.1}% of {} classifiable trades",
-                    rate * 100.0,
-                    sides.checked
-                ),
-                None => println!("  no classifiable trade to check the `side` field against"),
-            }
-
-            let threshold = match args.surge_size {
-                Some(size) => size,
-                None => {
-                    let mut sizes: Vec<f64> = mine.iter().map(|trade| trade.size).collect();
-                    let scaled = median(&mut sizes).map(|value| value * 5.0);
-                    let value = scaled.filter(|value| *value > 0.0).unwrap_or(1.0);
-                    println!(
-                        "  surge threshold {value:.0} (5x the median trade; set --surge-size to override)"
-                    );
-                    value
-                }
-            };
-            let surge_window_ns = args.surge_secs.saturating_mul(1_000_000_000);
-            let bursts = flow::surges(&executions, &asset, surge_window_ns, threshold);
+            println!();
+            let bursts = describe_flow(&market, &quotes, &asset, args);
             let flow_matched = align::leads(&found, &flow::surge_signals(&bursts), window_ns);
             report_leads(
-                &format!("net taking of {threshold:.0} within {}s", args.surge_secs),
+                &format!("net taking within {}s", args.surge_secs),
                 &flow_matched,
                 args.window_secs,
                 bursts.len(),
             );
+            report_edge(&bursts, &quotes, &asset, args);
+        }
+        _ => {
+            println!("\n== Order flow ==");
+            let bursts = describe_flow(&market, &quotes, &asset, args);
+            report_edge(&bursts, &quotes, &asset, args);
         }
     }
     Ok(())
@@ -475,10 +594,28 @@ mod tests {
     }
 
     #[test]
-    fn a_market_and_something_to_compare_it_with_are_required() {
-        assert!(parse_args(args(&["--market", "a.jsonl"])).is_err());
+    fn a_market_recording_stands_on_its_own() {
+        // With nothing to compare against, the edge study still runs.
+        let parsed = parse_args(args(&["--market", "a.jsonl"])).unwrap().unwrap();
+        assert!(parsed.against.is_none());
+        assert_eq!(parsed.hold_secs, 30);
+        assert_eq!(parsed.fee_bps, 0.0);
+    }
+
+    #[test]
+    fn a_comparison_without_a_market_is_refused() {
         assert!(parse_args(args(&["--labels", "l.jsonl"])).is_err());
         assert!(parse_args(args(&[])).is_err());
+    }
+
+    #[test]
+    fn trial_settings_are_validated() {
+        assert!(parse_args(args(&["--market", "m", "--hold-secs", "0"])).is_err());
+        assert!(parse_args(args(&["--market", "m", "--fee-bps", "-1"])).is_err());
+        let parsed = parse_args(args(&["--market", "m", "--fee-bps", "25"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.fee_bps, 25.0);
     }
 
     #[test]

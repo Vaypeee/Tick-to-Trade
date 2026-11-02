@@ -65,7 +65,7 @@ fn as_f64(value: Option<&Value>) -> Option<f64> {
 }
 
 /// The touch as it stood at `at_unix_ns`, from the replayed quote series.
-fn touch_at(quotes: &[Quote], asset: &str, at_unix_ns: u64) -> Option<(f64, f64)> {
+pub fn touch_at(quotes: &[Quote], asset: &str, at_unix_ns: u64) -> Option<(f64, f64)> {
     quotes
         .iter()
         .rev()
@@ -139,9 +139,10 @@ pub fn trades(records: &[Record], quotes: &[Quote]) -> (Vec<Trade>, SideAgreemen
 /// A burst of one-sided taking.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Surge {
-    /// The last trade in the burst: the first instant the whole burst was
-    /// visible. Dating it from the first trade would credit the signal with
-    /// information nobody could have had yet.
+    /// The trade that carried the net past the threshold, which is the first
+    /// instant the burst was visible as one. Dating it from the first trade
+    /// of the window would credit the signal with information nobody had
+    /// yet; waiting for the burst to finish would do the same.
     pub at_unix_ns: u64,
     pub asset: String,
     /// Positive when buyers were lifting, negative when sellers were hitting.

@@ -1,0 +1,15 @@
+{
+  "feed": "polymarket",
+  "recorder_version": "fixture",
+  "started_unix_secs": 1700000000,
+  "clocks": {
+    "t_mono_ns": "nanoseconds since the recorder started; use this for durations",
+    "t_unix_ns": "wall clock at receipt"
+  },
+  "ws_url": "wss://example.invalid/ws/market",
+  "asset_ids": [
+    "SYNTHETIC_OUTCOME_A"
+  ],
+  "ping_interval_secs": 10,
+  "note": "hand-built, not a real recording; see tests/pipeline.rs"
+}

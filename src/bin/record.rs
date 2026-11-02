@@ -17,7 +17,8 @@ use tokio::sync::watch;
 
 const DEFAULT_CONFIG: &str = "config.toml";
 const USAGE: &str = "\
-usage: record [--feed <polymarket|sports>] [--config <path>] [--duration-secs <n>]
+usage: record [--feed <polymarket|sports|labels>] [--config <path>]
+              [--duration-secs <n>]
 
     --feed <name>          polymarket (default), sports or labels
     --config <path>        configuration file (default: config.toml)
@@ -30,10 +31,10 @@ The Polymarket market channel is public, so no credentials are needed;
 labels feed serves a local page: press its keys as you watch the broadcast,
 and each press records when an ordinary spectator could have known.
 
-Record both at once, in two processes, so the recordings can be aligned:
+Record together, one process each, so the recordings can be aligned:
 
     record --feed polymarket &
-    record --feed sports &
+    record --feed labels &
 ";
 
 #[derive(Debug, PartialEq, Eq)]

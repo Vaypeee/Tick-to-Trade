@@ -1,17 +1,20 @@
 # Tick to trade
 
-> **Status: early development.** Both recorders work and are in use. Nothing
-> downstream of them exists yet, and no end-to-end latency numbers have been
-> measured — every table below marked *not measured* is a placeholder, not a
-> claim.
+> **Status: early development.** What exists is the measurement apparatus:
+> three recorders, a replay that rebuilds the order book, and an analysis that
+> compares the market against a feed, against a spectator, and against itself.
+> No live pipeline, no orders, and no result yet — every table below marked
+> *not measured* is a placeholder, not a claim.
 
-A low-latency, event-driven inference pipeline in Rust, built to test one
-hypothesis: during live sports events, Polymarket prices lag behind real-world
-events long enough for a fast system to act before the market reprices.
+A low-latency, event-driven inference pipeline in Rust, and the measurement
+apparatus built to find out whether it is worth writing. The question is
+whether prices on a live sports market lag the information that moves them —
+first against a data feed, and now against the public broadcast itself.
 
-This is an educational project. The goal is to design an infrastructure, build
-it, measure it, and then validate or reject the hypothesis with data. It runs in
-paper mode by default and places no real orders.
+This is an educational project in market microstructure. The goal is to build
+the infrastructure, measure it, and then validate or reject each hypothesis
+with data rather than argument. It runs in paper mode and places no real
+orders.
 
 ## 1. Hypotheses
 
@@ -50,12 +53,13 @@ The questions, in the order they can actually be answered:
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
-    <img alt="Two websocket feeds enter a single-threaded event loop: the sports feed is parsed into events, scored into a fair probability, and compared against order book state before an order is sent to the Polymarket CLOB. Latency is timestamped at every boundary." src="assets/architecture-light.svg" width="100%">
+    <img alt="Two websocket feeds enter a single-threaded event loop: the sports feed is parsed into events, scored into a fair probability, and compared against order book state before an order is sent to the Polymarket CLOB. Latency is timestamped at every boundary." src="assets/architecture-light.svg" width="900">
   </picture>
 </p>
 
-The sports feed drives the hot path: every stage between a real-world event and
-an order leaving the process is on the latency budget. The CLOB websocket is a
+This is the architecture the project is aimed at, not what runs today; §7 says
+what exists. The sports feed drives the hot path: every stage between a
+real-world event and an order leaving the process is on the latency budget. The CLOB websocket is a
 separate, continuous stream — it keeps order book state so the decision stage
 can price the spread it would actually cross.
 
@@ -231,7 +235,7 @@ cargo run --release --bin record -- --feed labels
 ```
 
 <p align="center">
-  <img alt="The spectator baseline page: a grid of labelled keys for game events, a press counter, and a log of recorded presses with millisecond timestamps." src="assets/label-ui.jpg" width="100%">
+  <img alt="The spectator baseline page: a grid of labelled keys for game events, a press counter, and a log of recorded presses with millisecond timestamps." src="assets/label-ui.png" width="900">
 </p>
 
 A press is **not** the instant the event occurred. The stream runs seconds
@@ -286,6 +290,33 @@ acting on information, so only the imbalance counts. The window trails rather
 than looks forward, because a forward window can step past an offsetting trade
 and report the other side on its own — a buy and a matching sell would come
 out as a sell surge. A burst reports once, not once per trade in its tail.
+
+**Does following the flow pay, and how late can you be?**
+
+```bash
+cargo run --release --bin analyse -- \
+  --market data/recordings/polymarket-<unix>.jsonl \
+  --fee-bps 0 --hold-secs 30
+```
+
+With no comparison file, the market recording is studied on its own. Every
+detected surge is replayed as a round trip — enter after a reaction delay,
+hold, close — and the result is reported against a ladder of delays. That
+curve is the whole question: if the edge survives being thirty seconds late,
+speed was never the constraint and the effort belongs in the model instead.
+
+Three pessimistic choices, because each is a way a backtest talks itself into
+a strategy that loses money live:
+
+- **Both legs cross the spread.** Buying pays the ask, selling receives the
+  bid. A mid-to-mid study books half the spread twice as profit nobody earns.
+- **Entry is deliberately late.** You cannot trade at the instant of the
+  surge, so the delay is a parameter rather than an assumption.
+- **Size is ignored, and the result says so.** Every fill is at the touch,
+  which a thin book will not absorb, so the number is an upper bound.
+
+`--fee-bps` is charged on each leg; leave it at zero only if the venue really
+takes nothing.
 
 **H1 — how long after a data feed did the market follow?**
 
@@ -346,7 +377,48 @@ refused, because no execution path has been written or tested yet. `config.toml`
 holds credentials and is git-ignored, as is `data/`; only
 `config.example.toml` is committed.
 
-## 8. Roadmap
+## 8. Run book for a live match
+
+What to do, in order, while a game is on.
+
+**1. Find the market and its outcome token ids.** Both of them: the channel
+pushes deltas for every outcome but only snapshots the ones subscribed to.
+
+```bash
+curl -s "https://gamma-api.polymarket.com/markets?closed=false&active=true&limit=400&order=volume24hr&ascending=false" | python -c "import json,sys; [print(m['question'][:60], json.loads(m['clobTokenIds'])) for m in json.load(sys.stdin) if 'league of legends' in (m['question']+m['slug']).lower() and m.get('clobTokenIds')]"
+```
+
+Put both ids in `polymarket.asset_ids`, with the outcome you think of as
+"blue" first — the label directions are expressed relative to it.
+
+**2. Start the recorders, one process each, before kickoff.**
+
+```bash
+cargo run --release --bin record -- --feed polymarket &
+cargo run --release --bin record -- --feed labels &
+```
+
+**3. Open http://127.0.0.1:7878/ and keep it focused.** Press keys as you
+watch. Keyboard only. A reload is safe: the page asks the server for what it
+already recorded.
+
+**4. Check the run before trusting it.** At the end, both processes report
+`stalls=0` and `reconnects`. A non-zero stall count means the recorder was in
+the way of its own measurement.
+
+**5. Analyse.**
+
+```bash
+cargo run --release --bin analyse -- \
+  --market data/recordings/polymarket-<unix>.jsonl \
+  --labels data/recordings/labels-<unix>.jsonl
+```
+
+One game will not settle anything. Teamfights worth labelling happen a few
+times per game, so a usable sample is several games, and the tool says so
+when there are too few matched presses to read.
+
+## 9. Roadmap
 
 Ordered so that the hypothesis is tested before the fast system is built.
 
@@ -354,13 +426,13 @@ Ordered so that the hypothesis is tested before the fast system is built.
 - [x] Recorder for a sports feed, provider-agnostic, measuring its own lag
 - [ ] A sports feed fast enough to be worth trading on, found by measurement
 - [x] Offline analysis: replay, book reconstruction, lag measurement
-- [ ] Edge against latency, once a fast enough feed exists — fills §5
-- [x] Spectator baseline: hand-labelled ground truth from the public broadcast
+- [ ] H1 end to end, once a feed fast enough to test it exists
+- [x] Spectator baseline: hand-stamped from the public broadcast
 - [x] Tool to measure the lead of the book over the spectator baseline
 - [ ] The H2 measurement itself, over enough matches to mean something
 - [x] Aggressive-flow detection: net taking over a trailing window
-- [ ] Validation of that signal against labels from real matches
-- [ ] Continuation study: does a detected move clear fees and spread?
+- [ ] Validation of that signal against labels from real matches — fills §5
+- [x] Continuation study: what following a surge pays, against reaction delay
 - [ ] Live terminal dashboard: feed state, latency histograms, captured edge
 - [ ] Order book state in the live pipeline, reusing the replay reconstruction
 - [ ] Latency instrumentation end to end (HDR histograms)

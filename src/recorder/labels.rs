@@ -15,7 +15,8 @@
 //! The page is unauthenticated and its presses are written to disk, so it is
 //! bound to loopback and the configuration refuses anything else.
 
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -36,6 +37,12 @@ use crate::config::{Button, Config, Labels};
 
 const PAGE: &str = include_str!("../../assets/label-ui.html");
 
+/// Presses kept in memory so a reloaded page can show what it already
+/// recorded. A match runs for the better part of an hour, and losing the
+/// visible log to a stray refresh makes the operator doubt a recording that
+/// is in fact intact.
+const RECENT: usize = 24;
+
 /// One press, on its way from the handler to the recording.
 struct Press {
     id: String,
@@ -44,11 +51,21 @@ struct Press {
     clicked: Stamp,
 }
 
+/// A press as the page redisplays it. Not evidence: the recording on disk is.
+#[derive(Debug, Clone, Serialize)]
+struct Recent {
+    id: String,
+    text: String,
+    direction: String,
+    clicked_unix_ms: i64,
+}
+
 #[derive(Clone)]
 struct AppState {
     tx: mpsc::Sender<Press>,
     buttons: Arc<Vec<Button>>,
     origin: Instant,
+    recent: Arc<Mutex<VecDeque<Recent>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,9 +99,27 @@ pub fn metadata(config: &Config) -> Result<Value> {
     }))
 }
 
+/// Takes the port before anything else happens.
+///
+/// Called before the recording is opened, so starting a second labeller by
+/// mistake fails immediately instead of leaving an empty recording and a
+/// metadata sidecar behind to be puzzled over later.
+pub async fn bind(config: &Config) -> Result<tokio::net::TcpListener> {
+    let labels = labels(config)?;
+    tokio::net::TcpListener::bind(&labels.bind)
+        .await
+        .with_context(|| {
+            format!(
+                "cannot bind `{}` — another labeller is probably already running",
+                labels.bind
+            )
+        })
+}
+
 /// Serves the page and records presses until `shutdown` flips to `true`.
 pub async fn run(
     config: &Config,
+    listener: tokio::net::TcpListener,
     session: &mut Session,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
@@ -94,17 +129,16 @@ pub async fn run(
         tx,
         buttons: Arc::new(labels.buttons.clone()),
         origin: session.origin(),
+        recent: Arc::new(Mutex::new(VecDeque::with_capacity(RECENT))),
     };
 
     let app = Router::new()
         .route("/", get(page))
         .route("/buttons", get(buttons))
+        .route("/recent", get(recent))
         .route("/label", post(press))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(&labels.bind)
-        .await
-        .with_context(|| format!("cannot bind `{}`", labels.bind))?;
     let served = listener
         .local_addr()
         .map(|address| address.to_string())
@@ -164,6 +198,15 @@ async fn buttons(State(state): State<AppState>) -> Json<Vec<Button>> {
     Json(state.buttons.as_ref().clone())
 }
 
+async fn recent(State(state): State<AppState>) -> Json<Vec<Recent>> {
+    let held = state
+        .recent
+        .lock()
+        .map(|held| held.iter().cloned().collect())
+        .unwrap_or_default();
+    Json(held)
+}
+
 async fn press(
     State(state): State<AppState>,
     Json(body): Json<PressBody>,
@@ -199,12 +242,26 @@ async fn press(
         .tx
         .send(Press {
             id: button.id.clone(),
-            direction,
+            direction: direction.clone(),
             received,
             clicked,
         })
         .await
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+
+    // Only after the press is safely queued for the recording: the page
+    // should never show something the recording does not have.
+    if let Ok(mut held) = state.recent.lock() {
+        if held.len() == RECENT {
+            held.pop_front();
+        }
+        held.push_back(Recent {
+            id: button.id.clone(),
+            text: button.text.clone(),
+            direction,
+            clicked_unix_ms: body.clicked_unix_ms,
+        });
+    }
 
     Ok(Json(PressReply {
         ok: true,
@@ -234,6 +291,21 @@ mod tests {
     fn the_page_is_embedded_and_wired_to_the_endpoints() {
         assert!(super::PAGE.contains("/buttons"));
         assert!(super::PAGE.contains("/label"));
+        assert!(super::PAGE.contains("/recent"));
         assert!(super::PAGE.contains("clicked_unix_ms"));
+    }
+
+    #[test]
+    fn the_recent_buffer_keeps_only_the_tail() {
+        use std::collections::VecDeque;
+        let mut held: VecDeque<u32> = VecDeque::new();
+        for value in 0..(super::RECENT as u32 + 5) {
+            if held.len() == super::RECENT {
+                held.pop_front();
+            }
+            held.push_back(value);
+        }
+        assert_eq!(held.len(), super::RECENT);
+        assert_eq!(*held.back().unwrap(), super::RECENT as u32 + 4);
     }
 }

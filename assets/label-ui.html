@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Spectator baseline</title>
+<script>
+  // `?theme=dark` pins the dark palette regardless of the system setting,
+  // which is what makes a capture of this page reproducible.
+  if (new URLSearchParams(location.search).get('theme') === 'dark') {
+    document.documentElement.dataset.theme = 'dark';
+  }
+</script>
 <style>
   :root {
     --bg: #0d1117;
@@ -136,8 +143,7 @@ const lastEl = document.getElementById('last');
 
 let buttons = [];
 let byKey = new Map();
-let count = 0;
-let lastPressAt = null;
+let history = [];
 const started = Date.now();
 const held = new Set();
 
@@ -176,26 +182,32 @@ function flash(id) {
   setTimeout(() => el.classList.remove('hit'), 140);
 }
 
-function logPress(b, at) {
-  if (count === 1) logEl.innerHTML = '<table id="rows"></table>';
-  const rows = document.getElementById('rows');
-  const tr = rows.insertRow(0);
-  const gap = lastPressAt ? ((at - lastPressAt) / 1000).toFixed(1) + 's' : '—';
-  tr.innerHTML =
-    `<td class="t">${clock(at)}</td>` +
-    `<td class="${b.direction}">${b.text}</td>` +
-    `<td class="d">+${gap}</td>`;
-  while (rows.rows.length > 12) rows.deleteRow(rows.rows.length - 1);
+function renderLog() {
+  countEl.textContent = history.length;
+  if (history.length === 0) {
+    logEl.innerHTML = '<div class="empty">Nothing yet. Press a key as you watch.</div>';
+    return;
+  }
+  const rows = [...history].slice(-12).reverse();
+  let html = '<table>';
+  for (let i = 0; i < rows.length; i += 1) {
+    const entry = rows[i];
+    const older = rows[i + 1];
+    const gap = older ? '+' + ((entry.at - older.at) / 1000).toFixed(1) + 's' : '←';
+    html +=
+      `<tr><td class="t">${clock(entry.at)}</td>` +
+      `<td class="${entry.direction}">${entry.text}</td>` +
+      `<td class="d">${gap}</td></tr>`;
+  }
+  logEl.innerHTML = html + '</table>';
 }
 
 async function send(b, at) {
   // Stamped before the request, so neither the fetch nor the server queue
   // lands inside the number the recording keeps.
   flash(b.id);
-  count += 1;
-  countEl.textContent = count;
-  logPress(b, at);
-  lastPressAt = at;
+  history.push({ at, text: b.text, direction: b.direction });
+  renderLog();
 
   const t0 = performance.now();
   try {
@@ -229,12 +241,27 @@ document.addEventListener('keyup', (e) => held.delete(e.key.toLowerCase()));
 setInterval(() => {
   const s = Math.floor((Date.now() - started) / 1000);
   sessionEl.textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
-  lastEl.textContent = lastPressAt ? Math.round((Date.now() - lastPressAt) / 1000) + 's' : '—';
+  const last = history.length ? history[history.length - 1].at : null;
+  lastEl.textContent = last ? Math.round((Date.now() - last) / 1000) + 's' : '—';
 }, 500);
 
-fetch('/buttons')
-  .then((r) => r.json())
-  .then((data) => { buttons = data; render(); setStatus('ready', 'live'); })
+// A reload must not look like a lost session: the server replays what it
+// already recorded, so the page comes back showing the same presses.
+Promise.all([
+  fetch('/buttons').then((r) => r.json()),
+  fetch('/recent').then((r) => r.json()).catch(() => []),
+])
+  .then(([list, previous]) => {
+    buttons = list;
+    render();
+    history = previous.map((entry) => ({
+      at: entry.clicked_unix_ms,
+      text: entry.text,
+      direction: entry.direction,
+    }));
+    renderLog();
+    setStatus(history.length ? 'recording' : 'ready', 'live');
+  })
   .catch(() => setStatus('no server', 'dead'));
 </script>
 </body>
