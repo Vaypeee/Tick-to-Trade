@@ -104,12 +104,22 @@ percentiles to mean anything.
 The hypothesis is not yet tested: that needs a sports feed that actually shows
 events, and no such feed has been found. Three things have been measured.
 
-**The book reconstruction is correct.** Replaying a 17-minute recording of a
-live Serie A market, the order book rebuilt from the snapshot and the deltas
-agreed with the exchange's own `best_bid` and `best_ask` on **100% of 14,866
-updates**. The live pipeline will price the spread it crosses with this same
-code, so this is the one piece that is now known to be right rather than
-assumed to be.
+**The book reconstruction is correct, and the check earns its keep.**
+Replaying a 17-minute recording of a live Serie A market, the order book
+rebuilt from the snapshot and the deltas agreed with the exchange's own
+`best_bid` and `best_ask` on **100% of 14,866 updates**. The live pipeline
+will price the spread it crosses with this same code, so this is the one piece
+that is now known to be right rather than assumed to be.
+
+The check then caught something on a second recording, where agreement fell to
+67%. The market channel pushes price changes for **every** outcome of a
+market, but only sends an opening snapshot for the outcomes subscribed to —
+and a book cannot be rebuilt from deltas alone. The replay had been applying
+changes to an outcome it had never seen a baseline for, producing a book that
+looked plausible and quoted a touch that did not exist. Those deltas are now
+dropped and counted rather than guessed at, which restored 100% agreement and
+turned a silent error into a line of output. Subscribe to every outcome of a
+market.
 
 **A free scoreboard endpoint is too slow to be the input.** Polling ESPN at
 1 Hz during a live match, the response changed only every 10–20 seconds, with
@@ -242,17 +252,53 @@ costs a few hundred milliseconds, and those are the units being measured.
 
 ### Analysing
 
+Both measurements run from the same tool, against the same replayed market.
+
+**H2 — how far ahead of a spectator was the book?**
+
 ```bash
-cargo run --release --bin analyse --   --market data/recordings/polymarket-<unix>.jsonl   --sports data/recordings/sports-<unix>.jsonl
+cargo run --release --bin analyse -- \
+  --market data/recordings/polymarket-<unix>.jsonl \
+  --labels data/recordings/labels-<unix>.jsonl
 ```
 
-This is the measurement the project exists to make. It replays the market
-recording into a mid-price series by rebuilding the order book from the
-snapshot and the deltas, diffs each stored sports response against the one
-before it to find what the feed showed changing, and reports how long the
-market took to move afterwards.
+For each key press it reports the signed offset to the nearest market signal.
+Negative means the market moved first, and that distance is the advantage
+somebody already had over you.
 
-Three choices in it are worth stating, because each one is a way the number
+Two signals are measured separately, because they answer different questions:
+
+- **Price moves** — the mid shifting by at least `--min-move`. This is the
+  *consequence* of informed trading.
+- **Aggressive order flow** — net liquidity taken over a trailing window,
+  past `--surge-size`. This is the *cause*, and it is visible earlier and more
+  sharply than the price it eventually moves.
+
+Trades are classified as buyer- or seller-initiated by where they printed
+relative to the touch, not by trusting the `side` field on the message. Both
+readings are kept and the agreement rate is reported — the same discipline as
+rebuilding the book instead of taking the exchange's `best_bid` on faith. A
+field whose meaning has been assumed rather than checked is a quiet way to be
+wrong for months.
+
+Netting is deliberate: two sides trading with each other is not somebody
+acting on information, so only the imbalance counts. The window trails rather
+than looks forward, because a forward window can step past an offsetting trade
+and report the other side on its own — a buy and a matching sell would come
+out as a sell surge. A burst reports once, not once per trade in its tail.
+
+**H1 — how long after a data feed did the market follow?**
+
+```bash
+cargo run --release --bin analyse -- \
+  --market data/recordings/polymarket-<unix>.jsonl \
+  --sports data/recordings/sports-<unix>.jsonl
+```
+
+Both replay the market recording into a mid-price series by rebuilding the
+order book from the snapshot and the deltas.
+
+Five choices in it are worth stating, because each one is a way the number
 could have been flattered:
 
 - **Alignment is on wall clock, never on the monotonic clock.** Each recorder
@@ -261,9 +307,20 @@ could have been flattered:
 - **Polling uncertainty stays visible.** A change is bounded by the request
   that found it and the response that carried it, so every lag is reported as
   a range rather than a point.
-- **Feed changes the market ignored are excluded, not counted as zero.** They
-  are reported separately. Averaging them in as instant reactions would invent
-  an edge that is not there.
+- **Events the market ignored are excluded, not counted as zero.** They are
+  reported separately. Averaging them in as instant reactions would invent an
+  edge that is not there.
+- **Moves are extracted from the price series alone**, before any press or
+  feed change is looked at. A move set chosen while looking at the events it
+  will be compared against is not evidence of anything.
+- **The search around a press is symmetric.** Looking only backwards would
+  find a lead whenever the market happened to move at all, and would hide the
+  case where the market moved *after* you — which is the result that sinks the
+  hypothesis, and therefore the one most worth being able to see.
+
+A press also carries the direction its event should have pushed the price, so
+a move the wrong way is reported as disagreeing rather than counted as a
+reaction.
 
 The rebuilt book is cross-checked against the `best_bid` and `best_ask` the
 exchange reports on every delta, and the agreement rate is printed. The live
@@ -271,9 +328,12 @@ pipeline will depend on this same reconstruction to price the spread it is
 about to cross, so a disagreement is better found here, against a recording,
 than later against money.
 
-`--min-move` sets what counts as a reaction (default 0.02 of probability) and
-`--horizon-secs` how long to wait for one. `--path` narrows which parts of the
-feed document count as events; with none, every change counts.
+`--min-move` sets what counts as a move (default 0.02 of probability),
+`--window-secs` how far either side of a press to look for the nearest one,
+and `--horizon-secs` how long to wait for the market to follow a feed change.
+`--path` narrows which parts of a polled document count as events; with none,
+every change counts, and the tool prints which paths churn most, so the choice
+can be made from evidence about the feed rather than a guess.
 
 ### Running the pipeline
 
@@ -296,8 +356,10 @@ Ordered so that the hypothesis is tested before the fast system is built.
 - [x] Offline analysis: replay, book reconstruction, lag measurement
 - [ ] Edge against latency, once a fast enough feed exists — fills §5
 - [x] Spectator baseline: hand-labelled ground truth from the public broadcast
-- [ ] Lead time of the book over the spectator baseline — the H2 measurement
-- [ ] Aggressive-move detection from order flow, validated against the labels
+- [x] Tool to measure the lead of the book over the spectator baseline
+- [ ] The H2 measurement itself, over enough matches to mean something
+- [x] Aggressive-flow detection: net taking over a trailing window
+- [ ] Validation of that signal against labels from real matches
 - [ ] Continuation study: does a detected move clear fees and spread?
 - [ ] Live terminal dashboard: feed state, latency histograms, captured edge
 - [ ] Order book state in the live pipeline, reusing the replay reconstruction

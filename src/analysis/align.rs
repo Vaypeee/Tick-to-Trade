@@ -14,6 +14,11 @@
 pub struct Quote {
     pub at_unix_ns: u64,
     pub asset: String,
+    /// The touch is kept, not just the mid. Classifying a trade as aggressive
+    /// needs to know which side of the spread it crossed, and a mid alone
+    /// cannot say.
+    pub bid: f64,
+    pub ask: f64,
     pub mid: f64,
 }
 
@@ -154,6 +159,140 @@ pub fn match_observations(
     }
 }
 
+/// Every move of at least `min_move` in one outcome, in time order.
+///
+/// Extracted from the price series alone, with no knowledge of the labels.
+/// That independence is the point: a move set chosen while looking at the
+/// events it will be compared against is not evidence of anything.
+///
+/// The baseline resets to each move as it is emitted, so a slow drift of many
+/// small steps registers once per `min_move` travelled rather than on every
+/// tick above the threshold.
+pub fn significant_moves(quotes: &[Quote], asset: &str, min_move: f64) -> Vec<Move> {
+    let mut moves = Vec::new();
+    let mut baseline: Option<f64> = None;
+
+    for quote in quotes.iter().filter(|quote| quote.asset == asset) {
+        let Some(previous) = baseline else {
+            baseline = Some(quote.mid);
+            continue;
+        };
+        if (super::ticks(quote.mid) - super::ticks(previous)).abs() >= super::ticks(min_move) {
+            moves.push(Move {
+                at_unix_ns: quote.at_unix_ns,
+                asset: quote.asset.clone(),
+                from: previous,
+                to: quote.mid,
+            });
+            baseline = Some(quote.mid);
+        }
+    }
+    moves
+}
+
+/// The move closest in time to `at_unix_ns`, within `window_ns` either side.
+///
+/// Deliberately symmetric. Looking only backwards would find a lead whenever
+/// the market happened to move at all, and report nothing when it moved after
+/// — which is itself the result that would sink the hypothesis.
+pub fn nearest_signal(signals: &[Signal], at_unix_ns: u64, window_ns: u64) -> Option<&Signal> {
+    signals
+        .iter()
+        .map(|candidate| (offset_ns(candidate.at_unix_ns, at_unix_ns), candidate))
+        .filter(|(offset, _)| offset.unsigned_abs() <= window_ns)
+        .min_by_key(|(offset, _)| offset.abs())
+        .map(|(_, candidate)| candidate)
+}
+
+/// Signed nanoseconds from `reference` to `point`; negative means earlier.
+pub fn offset_ns(point: u64, reference: u64) -> i64 {
+    point as i64 - reference as i64
+}
+
+/// Something in the market that might be a reaction, reduced to the three
+/// things the comparison needs: when it happened, which way it pointed, and
+/// how to print it.
+///
+/// Both a mid-price move and a burst of aggressive trading become one of
+/// these, so the two can be measured against the spectator with the same
+/// code and read off the same table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Signal {
+    pub at_unix_ns: u64,
+    /// True when the signal points at the first outcome becoming likelier.
+    pub rose: bool,
+    pub detail: String,
+}
+
+impl Move {
+    pub fn signal(&self) -> Signal {
+        Signal {
+            at_unix_ns: self.at_unix_ns,
+            rose: super::ticks(self.to) > super::ticks(self.from),
+            detail: format!("{:.3} -> {:.3}", self.from, self.to),
+        }
+    }
+}
+
+/// One press matched to the signal nearest it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lead {
+    pub label: String,
+    pub pressed_unix_ns: u64,
+    /// Negative when the market moved before the press: that is the advantage.
+    pub offset_ns: i64,
+    /// Whether the signal pointed the way the event should have pushed the
+    /// price. A market moving the wrong way is noise, not a reaction.
+    pub agrees: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Leads {
+    pub leads: Vec<Lead>,
+    /// Presses with no qualifying move anywhere near them. The market simply
+    /// did not react, and these are reported rather than quietly dropped.
+    pub unmatched: usize,
+}
+
+/// Matches each press to the nearest significant move.
+///
+/// `direction` is the way the labelled event should push this outcome: `up`,
+/// `down`, or anything else for neutral, which agrees with any move.
+pub fn leads(presses: &[(u64, String, String)], signals: &[Signal], window_ns: u64) -> Leads {
+    let mut found = Vec::new();
+    let mut unmatched = 0;
+
+    for (pressed, label, direction) in presses {
+        let Some(candidate) = nearest_signal(signals, *pressed, window_ns) else {
+            unmatched += 1;
+            continue;
+        };
+        let agrees = match direction.as_str() {
+            "up" => candidate.rose,
+            "down" => !candidate.rose,
+            _ => true,
+        };
+        found.push(Lead {
+            label: label.clone(),
+            pressed_unix_ns: *pressed,
+            offset_ns: offset_ns(candidate.at_unix_ns, *pressed),
+            agrees,
+            detail: candidate.detail.clone(),
+        });
+    }
+
+    Leads {
+        leads: found,
+        unmatched,
+    }
+}
+
+/// Convenience for the common case of comparing against price moves.
+pub fn move_signals(moves: &[Move]) -> Vec<Signal> {
+    moves.iter().map(Move::signal).collect()
+}
+
 /// Nearest-rank percentile of an already sorted slice.
 pub fn percentile(sorted: &[u64], percent: f64) -> Option<u64> {
     if sorted.is_empty() {
@@ -171,6 +310,8 @@ mod tests {
         Quote {
             at_unix_ns: at,
             asset: "A".into(),
+            bid: mid - 0.005,
+            ask: mid + 0.005,
             mid,
         }
     }
@@ -276,6 +417,83 @@ mod tests {
         let matched = match_observations(&found, &quotes, 0.05, 1_000);
         assert_eq!(matched.lags.len(), 2);
         assert_eq!(matched.contested, 0);
+    }
+
+    #[test]
+    fn moves_are_extracted_without_reference_to_any_event() {
+        let series = vec![
+            quote(100, 0.50),
+            quote(200, 0.51),
+            quote(300, 0.53),
+            quote(400, 0.52),
+            quote(500, 0.58),
+        ];
+        let found = significant_moves(&series, "A", 0.02);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].at_unix_ns, 300);
+        assert_eq!(found[1].at_unix_ns, 500);
+        // The baseline resets, so the second move is measured from 0.53.
+        assert_eq!(found[1].from, 0.53);
+    }
+
+    #[test]
+    fn moves_in_another_outcome_are_ignored() {
+        let mut series = vec![quote(100, 0.50), quote(200, 0.90), quote(300, 0.53)];
+        series[1].asset = "B".into();
+        let found = significant_moves(&series, "A", 0.02);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].at_unix_ns, 300);
+    }
+
+    #[test]
+    fn the_nearest_move_can_be_on_either_side_of_the_press() {
+        let moves = significant_moves(
+            &[quote(100, 0.50), quote(200, 0.60), quote(400, 0.70)],
+            "A",
+            0.05,
+        );
+        let signals = move_signals(&moves);
+        // Press at 250: the move at 200 is 50 ns back, the one at 400 is 150 on.
+        assert_eq!(
+            nearest_signal(&signals, 250, 1_000).unwrap().at_unix_ns,
+            200
+        );
+        // Press at 380: the later move is nearer, so the book followed.
+        assert_eq!(
+            nearest_signal(&signals, 380, 1_000).unwrap().at_unix_ns,
+            400
+        );
+        assert!(nearest_signal(&signals, 5_000, 100).is_none());
+    }
+
+    #[test]
+    fn a_book_that_moved_first_shows_a_negative_offset() {
+        let moves = significant_moves(&[quote(100, 0.50), quote(200, 0.60)], "A", 0.05);
+        let presses = [(250u64, "blue_fight".to_string(), "up".to_string())];
+        let report = leads(&presses, &move_signals(&moves), 1_000);
+        assert_eq!(report.leads.len(), 1);
+        assert_eq!(report.leads[0].offset_ns, -50);
+        assert!(report.leads[0].agrees);
+    }
+
+    #[test]
+    fn a_move_the_wrong_way_does_not_agree_with_the_event() {
+        let moves = significant_moves(&[quote(100, 0.60), quote(200, 0.50)], "A", 0.05);
+        let down = [(250u64, "blue_fight".to_string(), "up".to_string())];
+        assert!(!leads(&down, &move_signals(&moves), 1_000).leads[0].agrees);
+        let up = [(250u64, "red_fight".to_string(), "down".to_string())];
+        assert!(leads(&up, &move_signals(&moves), 1_000).leads[0].agrees);
+        let neutral = [(250u64, "notable".to_string(), "neutral".to_string())];
+        assert!(leads(&neutral, &move_signals(&moves), 1_000).leads[0].agrees);
+    }
+
+    #[test]
+    fn presses_the_market_ignored_are_counted() {
+        let moves = significant_moves(&[quote(100, 0.50), quote(200, 0.60)], "A", 0.05);
+        let presses = [(9_000u64, "blue_fight".to_string(), "up".to_string())];
+        let report = leads(&presses, &move_signals(&moves), 100);
+        assert!(report.leads.is_empty());
+        assert_eq!(report.unmatched, 1);
     }
 
     #[test]

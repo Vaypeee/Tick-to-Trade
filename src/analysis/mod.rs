@@ -7,6 +7,7 @@
 pub mod align;
 pub mod book;
 pub mod diff;
+pub mod flow;
 pub mod replay;
 
 use align::Observation;
@@ -106,6 +107,42 @@ pub fn change_frequency(records: &[Record], max_changes: usize) -> Vec<(String, 
     ranked
 }
 
+/// Presses from a labels recording, as `(pressed, label, direction)`.
+///
+/// The press is timed from the browser clock at the key, not from the moment
+/// the server wrote it: the loopback trip is the recorder, not the spectator.
+pub fn presses(records: &[Record]) -> Vec<(u64, String, String)> {
+    records
+        .iter()
+        .filter(|record| record.kind == Kind::Label)
+        .map(|record| {
+            let (pressed, _) = record.observed_window_ns();
+            (
+                pressed,
+                record.label.clone().unwrap_or_default(),
+                record.direction.clone().unwrap_or_else(|| "neutral".into()),
+            )
+        })
+        .collect()
+}
+
+/// The outcome a market recording lists first, read from its sidecar.
+///
+/// A label says which way an event should push *the first* outcome, so the
+/// comparison needs to know which token that was. The sidecar is written for
+/// exactly this: a recording that cannot say what it recorded is not evidence.
+pub fn reference_asset(recording: &std::path::Path) -> Option<String> {
+    let sidecar = recording.with_extension("meta.json");
+    let raw = std::fs::read_to_string(sidecar).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    parsed
+        .get("asset_ids")?
+        .as_array()?
+        .first()?
+        .as_str()
+        .map(str::to_owned)
+}
+
 /// Wall-clock span covered by a recording, in nanoseconds.
 pub fn span_ns(records: &[Record]) -> Option<(u64, u64)> {
     let first = records.first()?.t_unix_ns;
@@ -191,6 +228,41 @@ mod tests {
         let ranked = change_frequency(&records, 50);
         assert_eq!(ranked[0], ("/clock".to_string(), 2));
         assert_eq!(ranked[1], ("/score".to_string(), 1));
+    }
+
+    fn label(seq: u64, clicked: u64, name: &str, direction: &str) -> Record {
+        serde_json::from_value(json!({
+            "seq": seq,
+            "t_unix_ns": clicked + 3_000_000,
+            "t_mono_ns": clicked,
+            "kind": "label",
+            "label": name,
+            "direction": direction,
+            "t_click_unix_ns": clicked,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn presses_are_timed_from_the_key_not_from_the_write() {
+        let records = vec![label(1, 1_000, "blue_fight", "up")];
+        assert_eq!(
+            presses(&records),
+            [(1_000, "blue_fight".to_string(), "up".to_string())]
+        );
+    }
+
+    #[test]
+    fn control_lines_in_a_labels_recording_are_not_presses() {
+        let records: Vec<Record> = vec![
+            serde_json::from_value(json!({
+                "seq": 1, "t_unix_ns": 1, "t_mono_ns": 1,
+                "kind": "control", "control": "serving",
+            }))
+            .unwrap(),
+            label(2, 500, "red_pick", "down"),
+        ];
+        assert_eq!(presses(&records).len(), 1);
     }
 
     #[test]

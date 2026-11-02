@@ -31,6 +31,12 @@ rest_url = "https://clob.polymarket.com"
 # channel, not condition ids. Find them in `clobTokenIds` on the Gamma
 # markets API, for example:
 #   https://gamma-api.polymarket.com/markets?closed=false&limit=5
+#
+# List EVERY outcome of a market, not just the side you care about. The
+# channel pushes price changes for all of them, but it only sends an opening
+# snapshot for the ones subscribed to, and a book cannot be rebuilt from
+# deltas alone. Subscribe to one side of a binary market and half the deltas
+# arrive with nothing to apply them to.
 asset_ids = []
 # The market channel expects a PING text frame on this interval.
 ping_interval_secs = 10

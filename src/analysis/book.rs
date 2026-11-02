@@ -99,6 +99,14 @@ impl Book {
 pub struct Agreement {
     pub checked: u64,
     pub matched: u64,
+    /// Deltas dropped because no snapshot for that outcome was ever seen.
+    ///
+    /// The market channel pushes changes for every outcome of a market, not
+    /// only the ones subscribed to, and a book cannot be rebuilt from deltas
+    /// alone: without a snapshot there is no baseline to apply them to. Such
+    /// a book would look plausible and quote a touch that does not exist, so
+    /// the deltas are dropped and counted instead.
+    pub skipped: u64,
 }
 
 impl Agreement {
@@ -154,6 +162,10 @@ pub fn replay(records: &[Record]) -> (Vec<Quote>, Agreement) {
                     let Some(changes) = event.get("price_changes").and_then(Value::as_array) else {
                         continue;
                     };
+                    // The reported touch describes the state after the whole
+                    // batch, so the checks wait until every delta is applied.
+                    let mut reported: BTreeMap<String, (f64, f64)> = BTreeMap::new();
+
                     for change in changes {
                         let (Some(asset), Some(side)) = (
                             change.get("asset_id").and_then(Value::as_str),
@@ -161,23 +173,34 @@ pub fn replay(records: &[Record]) -> (Vec<Quote>, Agreement) {
                         ) else {
                             continue;
                         };
-                        let book = books.entry(asset.to_owned()).or_default();
+                        // No snapshot means no baseline. Applying the delta
+                        // anyway would build a book that quotes a touch which
+                        // does not exist.
+                        let Some(book) = books.get_mut(asset) else {
+                            agreement.skipped += 1;
+                            continue;
+                        };
                         book.apply_change(side, change);
 
-                        // Cross-check against what the exchange says the touch
-                        // is, now that the delta has been applied.
-                        if let (Some(reported_bid), Some(reported_ask)) = (
+                        if let (Some(bid), Some(ask)) = (
                             as_f64(change.get("best_bid")),
                             as_f64(change.get("best_ask")),
                         ) {
-                            agreement.checked += 1;
-                            let agrees = book.best_bid().map(ticks) == Some(ticks(reported_bid))
-                                && book.best_ask().map(ticks) == Some(ticks(reported_ask));
-                            if agrees {
-                                agreement.matched += 1;
-                            }
+                            reported.insert(asset.to_owned(), (bid, ask));
                         }
                         touched.push(asset.to_owned());
+                    }
+
+                    for (asset, (bid, ask)) in reported {
+                        let Some(book) = books.get(&asset) else {
+                            continue;
+                        };
+                        agreement.checked += 1;
+                        let agrees = book.best_bid().map(ticks) == Some(ticks(bid))
+                            && book.best_ask().map(ticks) == Some(ticks(ask));
+                        if agrees {
+                            agreement.matched += 1;
+                        }
                     }
                 }
                 // `last_trade_price` and the rest do not change the book.
@@ -185,7 +208,12 @@ pub fn replay(records: &[Record]) -> (Vec<Quote>, Agreement) {
             }
 
             for asset in touched {
-                let Some(mid) = books.get(&asset).and_then(Book::mid) else {
+                let Some(book) = books.get(&asset) else {
+                    continue;
+                };
+                let (Some(bid), Some(ask), Some(mid)) =
+                    (book.best_bid(), book.best_ask(), book.mid())
+                else {
                     continue;
                 };
                 if last_mid.get(&asset).map(|previous| ticks(*previous)) == Some(ticks(mid)) {
@@ -195,6 +223,8 @@ pub fn replay(records: &[Record]) -> (Vec<Quote>, Agreement) {
                 quotes.push(Quote {
                     at_unix_ns: record.t_unix_ns,
                     asset,
+                    bid,
+                    ask,
                     mid,
                 });
             }
@@ -308,7 +338,8 @@ mod tests {
             agreement,
             Agreement {
                 checked: 2,
-                matched: 2
+                matched: 2,
+                skipped: 0
             }
         );
         assert_eq!(agreement.rate(), Some(1.0));
@@ -342,9 +373,78 @@ mod tests {
             agreement,
             Agreement {
                 checked: 1,
-                matched: 0
+                matched: 0,
+                skipped: 0
             }
         );
+    }
+
+    #[test]
+    fn deltas_for_an_outcome_with_no_snapshot_are_dropped_not_guessed() {
+        // The channel pushes changes for every outcome of a market, including
+        // ones never subscribed to. Those have no snapshot behind them.
+        let records = vec![
+            record(
+                1,
+                100,
+                json!({
+                    "event_type": "book", "asset_id": "A",
+                    "bids": [level("0.40", "10")], "asks": [level("0.42", "10")],
+                }),
+            ),
+            record(
+                2,
+                200,
+                json!({
+                    "event_type": "price_change",
+                    "price_changes": [
+                        {"asset_id": "A", "side": "BUY", "price": "0.41", "size": "5",
+                         "best_bid": "0.41", "best_ask": "0.42"},
+                        {"asset_id": "UNSEEN", "side": "SELL", "price": "0.59", "size": "5",
+                         "best_bid": "0.58", "best_ask": "0.59"},
+                    ],
+                }),
+            ),
+        ];
+        let (quotes, agreement) = replay(&records);
+        assert_eq!(agreement.skipped, 1);
+        // The one outcome with a snapshot still reconciles perfectly.
+        assert_eq!(agreement.checked, 1);
+        assert_eq!(agreement.matched, 1);
+        // And no price is invented for the outcome that has no book.
+        assert!(quotes.iter().all(|quote| quote.asset == "A"));
+    }
+
+    #[test]
+    fn the_reported_touch_is_checked_once_the_whole_batch_is_applied() {
+        // Checking after the first delta would compare a half-applied book
+        // against the touch the exchange reports for the finished one.
+        let records = vec![
+            record(
+                1,
+                100,
+                json!({
+                    "event_type": "book", "asset_id": "A",
+                    "bids": [level("0.40", "10")], "asks": [level("0.44", "10")],
+                }),
+            ),
+            record(
+                2,
+                200,
+                json!({
+                    "event_type": "price_change",
+                    "price_changes": [
+                        {"asset_id": "A", "side": "BUY", "price": "0.41", "size": "5",
+                         "best_bid": "0.41", "best_ask": "0.43"},
+                        {"asset_id": "A", "side": "SELL", "price": "0.43", "size": "5",
+                         "best_bid": "0.41", "best_ask": "0.43"},
+                    ],
+                }),
+            ),
+        ];
+        let (_, agreement) = replay(&records);
+        assert_eq!(agreement.checked, 1);
+        assert_eq!(agreement.matched, 1);
     }
 
     #[test]
