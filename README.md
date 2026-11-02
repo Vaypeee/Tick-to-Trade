@@ -86,22 +86,37 @@ percentiles to mean anything.
 
 ## 5. Results
 
-Nothing conclusive yet. One preliminary observation, kept here because it
-shapes everything downstream:
+The hypothesis is not yet tested: that needs a sports feed that actually shows
+events, and no such feed has been found. Three things have been measured.
 
-**A free scoreboard endpoint updates far too slowly to be the input.** Polling
-ESPN at 1 Hz during a Serie A match, the response changed only every 10–20
-seconds; HTTP round-trip was a median 87 ms, so the limit is the source
-cadence, not the transport. A feed with 10-second granularity cannot beat a
-market that reprices in seconds, however fast the system behind it is.
-*Sample: 100 polls, one match, one source — enough to disqualify a candidate
-feed, not enough to characterise one.*
+**The book reconstruction is correct.** Replaying a 17-minute recording of a
+live Serie A market, the order book rebuilt from the snapshot and the deltas
+agreed with the exchange's own `best_bid` and `best_ask` on **100% of 14,866
+updates**. The live pipeline will price the spread it crosses with this same
+code, so this is the one piece that is now known to be right rather than
+assumed to be.
 
-This is the measurement the project exists to make, applied first to its own
-inputs. The remaining sections will record, with the sample size and the
-measurement method:
+**A free scoreboard endpoint is too slow to be the input.** Polling ESPN at
+1 Hz during a live match, the response changed only every 10–20 seconds, with
+HTTP round-trip at a median 87 ms: the ceiling is the source cadence, not the
+transport. A feed with 10-second granularity cannot beat a market that
+reprices in seconds, however fast the system behind it is.
 
-- the observed repricing window,
+**Most of what a feed shows is not an event.** Over 17 minutes of a live
+match, the same endpoint produced 23 changes and not one of them was a score:
+they were bookmaker odds and the match clock. This matters more than it looks.
+Run naively, the analysis credited five of those changes with the same single
+market move and reported a tidy distribution of lags from 23 s to 114 s — all
+of it an artifact. Each market move is now claimed by exactly one observation,
+the nearest before it, and contested matches are reported rather than counted.
+A noisy feed will otherwise manufacture whatever result it is asked for.
+
+*Sample: one match, one market, 1,020 s, 7,649 market frames, 24 stored feed
+responses, no sequence gaps and no recorder stalls.*
+
+Still to measure, with the sample size and the method stated:
+
+- the observed repricing window, once a feed shows events,
 - captured edge as a function of end-to-end latency,
 - the net result after fees and slippage,
 - whether the hypothesis is validated, rejected, or holds only in some
@@ -162,6 +177,7 @@ per line:
 | `t_mono_ns` | Monotonic nanoseconds since start — use this for durations |
 | `t_unix_ns` | Wall clock at receipt — the only clock comparable across recordings |
 | `kind` | `data` (a websocket frame), `poll` (a changed HTTP response), `text`, or `control` |
+| `t_request_*` | On a poll: when the request went out, bounding the change |
 
 Both clocks are kept because neither is enough alone: the monotonic one cannot
 jump when NTP steps the system clock, and the wall clock is the only one that
@@ -178,6 +194,41 @@ Only changed responses are stored; unchanged ones become a periodic
 Connection lifecycle is recorded the same way. If a writer ever falls behind
 its feed, the run reports a non-zero `stalls` count: those recordings measure
 the recorder as much as the market.
+
+### Analysing
+
+```bash
+cargo run --release --bin analyse --   --market data/recordings/polymarket-<unix>.jsonl   --sports data/recordings/sports-<unix>.jsonl
+```
+
+This is the measurement the project exists to make. It replays the market
+recording into a mid-price series by rebuilding the order book from the
+snapshot and the deltas, diffs each stored sports response against the one
+before it to find what the feed showed changing, and reports how long the
+market took to move afterwards.
+
+Three choices in it are worth stating, because each one is a way the number
+could have been flattered:
+
+- **Alignment is on wall clock, never on the monotonic clock.** Each recorder
+  starts its own monotonic origin, so comparing those across two files yields
+  a confident, meaningless offset.
+- **Polling uncertainty stays visible.** A change is bounded by the request
+  that found it and the response that carried it, so every lag is reported as
+  a range rather than a point.
+- **Feed changes the market ignored are excluded, not counted as zero.** They
+  are reported separately. Averaging them in as instant reactions would invent
+  an edge that is not there.
+
+The rebuilt book is cross-checked against the `best_bid` and `best_ask` the
+exchange reports on every delta, and the agreement rate is printed. The live
+pipeline will depend on this same reconstruction to price the spread it is
+about to cross, so a disagreement is better found here, against a recording,
+than later against money.
+
+`--min-move` sets what counts as a reaction (default 0.02 of probability) and
+`--horizon-secs` how long to wait for one. `--path` narrows which parts of the
+feed document count as events; with none, every change counts.
 
 ### Running the pipeline
 
@@ -197,10 +248,10 @@ Ordered so that the hypothesis is tested before the fast system is built.
 - [x] Recorder for the Polymarket CLOB market channel
 - [x] Recorder for a sports feed, provider-agnostic, measuring its own lag
 - [ ] A sports feed fast enough to be worth trading on, found by measurement
-- [ ] Offline analysis: repricing window, edge against latency — fills §5
-- [ ] Replay mode over recordings, for reproducible benchmarks
+- [x] Offline analysis: replay, book reconstruction, lag measurement
+- [ ] Edge against latency, once a fast enough feed exists — fills §5
 - [ ] Live terminal dashboard: feed state, latency histograms, captured edge
-- [ ] Order book state and normalised event stream
+- [ ] Order book state in the live pipeline, reusing the replay reconstruction
 - [ ] Latency instrumentation end to end (HDR histograms)
 - [ ] First fair-value model, however crude
 - [ ] Decision layer with an explicit fee and spread model

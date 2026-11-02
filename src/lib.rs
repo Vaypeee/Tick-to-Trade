@@ -1,11 +1,14 @@
 //! Infrastructure for the tick-to-trade experiment.
 //!
-//! The crate is split in two halves. [`recorder`] captures raw market data to
-//! disk with timestamps, and is the half that exists today: the hypothesis
-//! behind this project is testable from recordings alone, without a fast
-//! system. The live pipeline is built on top of it once the recordings say
-//! what latency budget is actually worth chasing.
+//! Two halves exist today, and neither touches the live pipeline. [`recorder`]
+//! captures raw feeds to disk with timestamps; [`analysis`] replays those
+//! recordings offline and measures the lag between a real-world event and the
+//! market repricing. The hypothesis behind this project is testable from
+//! recordings alone, without a fast system, so that is what was built first.
+//! The pipeline follows once the measurement says what latency budget is
+//! actually worth chasing.
 
+pub mod analysis;
 pub mod config;
 pub mod recorder;
 pub mod tls;
