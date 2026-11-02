@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spectator baseline</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --raised: #21262d;
+    --line: #30363d;
+    --fg: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --up: #3fb950;
+    --down: #f85149;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 28px 16px 48px; }
+
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+  h1 { font-size: 19px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 22px; max-width: 70ch; line-height: 1.5; }
+
+  .pill {
+    font-family: var(--mono); font-size: 11px; padding: 3px 9px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+  }
+  .pill.live { color: var(--up); border-color: #1f6f36; }
+  .pill.dead { color: var(--down); border-color: #7a2721; }
+
+  .grid {
+    display: grid; gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    margin-bottom: 26px;
+  }
+  button.key {
+    display: flex; align-items: center; gap: 13px; text-align: left;
+    background: var(--raised); color: var(--fg);
+    border: 1px solid var(--line); border-left: 3px solid var(--line);
+    border-radius: 9px; padding: 17px 16px; font-size: 15px; cursor: pointer;
+    transition: transform .04s ease, background .12s ease, border-color .12s ease;
+  }
+  button.key:hover { background: #2b313a; }
+  button.key:active, button.key.hit { transform: scale(.975); background: #30363d; }
+  button.key.hit { border-color: var(--accent); }
+  button.key[data-direction="up"] { border-left-color: var(--up); }
+  button.key[data-direction="down"] { border-left-color: var(--down); }
+  .cap {
+    font-family: var(--mono); font-size: 13px; min-width: 30px; height: 30px;
+    display: grid; place-items: center; border-radius: 6px;
+    background: #0d1117; border: 1px solid var(--line); color: var(--accent);
+    flex: 0 0 auto; text-transform: uppercase;
+  }
+  .dir { font-size: 11px; color: var(--muted); font-family: var(--mono); margin-left: auto; }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  .stat { padding: 15px 18px; border-right: 1px solid var(--line); }
+  .stat:last-child { border-right: 0; }
+  .stat .n { font-family: var(--mono); font-size: 21px; }
+  .stat .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-top: 3px; }
+
+  h2 { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; margin: 26px 0 9px; }
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12.5px; }
+  td { padding: 9px 18px; border-top: 1px solid var(--line); }
+  tr:first-child td { border-top: 0; }
+  td.t { color: var(--muted); width: 1%; white-space: nowrap; }
+  td.d { width: 1%; white-space: nowrap; text-align: right; color: var(--muted); }
+  .up { color: var(--up); } .down { color: var(--down); }
+  .empty { padding: 18px; color: var(--muted); font-size: 13px; }
+
+  footer { margin-top: 26px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+  kbd {
+    font-family: var(--mono); font-size: 11px; background: var(--raised);
+    border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #ffffff; --panel: #f6f8fa; --raised: #f6f8fa; --line: #d0d7de;
+      --fg: #1f2328; --muted: #656d76; --accent: #0969da; --up: #1a7f37; --down: #cf222e;
+    }
+    :root:not([data-theme="dark"]) .cap { background: #ffffff; }
+    :root:not([data-theme="dark"]) button.key:hover { background: #eef1f4; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Spectator baseline</h1>
+    <span class="pill" id="status">connecting…</span>
+    <span class="pill" id="rtt">rtt —</span>
+  </header>
+  <p class="sub">
+    Press a key the moment you see it happen on the stream. This records when a
+    spectator with no advantage could have known — not when the event occurred.
+    The gap between it and the order book moving is the measurement.
+  </p>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="panel stats">
+    <div class="stat"><div class="n" id="count">0</div><div class="k">presses</div></div>
+    <div class="stat"><div class="n" id="session">0:00</div><div class="k">session</div></div>
+    <div class="stat"><div class="n" id="last">—</div><div class="k">since last</div></div>
+  </div>
+
+  <h2>Recorded</h2>
+  <div class="panel"><div id="log"><div class="empty">Nothing yet. Press a key as you watch.</div></div></div>
+
+  <footer>
+    Keyboard only — a mouse costs you a few hundred milliseconds, and those are
+    the units being measured. Repeats while a key is held are ignored.
+    Press <kbd>?</kbd> to dim the page for screenshots.
+  </footer>
+</div>
+
+<script>
+const grid = document.getElementById('grid');
+const logEl = document.getElementById('log');
+const statusEl = document.getElementById('status');
+const rttEl = document.getElementById('rtt');
+const countEl = document.getElementById('count');
+const sessionEl = document.getElementById('session');
+const lastEl = document.getElementById('last');
+
+let buttons = [];
+let byKey = new Map();
+let count = 0;
+let lastPressAt = null;
+const started = Date.now();
+const held = new Set();
+
+function clock(ms) {
+  const d = new Date(ms);
+  const p = (n, w = 2) => String(n).padStart(w, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+}
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className = 'pill' + (cls ? ' ' + cls : '');
+}
+
+function render() {
+  grid.innerHTML = '';
+  for (const b of buttons) {
+    const el = document.createElement('button');
+    el.className = 'key';
+    el.dataset.id = b.id;
+    el.dataset.direction = b.direction;
+    el.innerHTML =
+      `<span class="cap">${b.key ? b.key : '·'}</span>` +
+      `<span>${b.text}</span>` +
+      `<span class="dir">${b.direction}</span>`;
+    el.addEventListener('click', () => send(b, Date.now()));
+    grid.appendChild(el);
+    if (b.key) byKey.set(b.key.toLowerCase(), b);
+  }
+}
+
+function flash(id) {
+  const el = grid.querySelector(`[data-id="${CSS.escape(id)}"]`);
+  if (!el) return;
+  el.classList.add('hit');
+  setTimeout(() => el.classList.remove('hit'), 140);
+}
+
+function logPress(b, at) {
+  if (count === 1) logEl.innerHTML = '<table id="rows"></table>';
+  const rows = document.getElementById('rows');
+  const tr = rows.insertRow(0);
+  const gap = lastPressAt ? ((at - lastPressAt) / 1000).toFixed(1) + 's' : '—';
+  tr.innerHTML =
+    `<td class="t">${clock(at)}</td>` +
+    `<td class="${b.direction}">${b.text}</td>` +
+    `<td class="d">+${gap}</td>`;
+  while (rows.rows.length > 12) rows.deleteRow(rows.rows.length - 1);
+}
+
+async function send(b, at) {
+  // Stamped before the request, so neither the fetch nor the server queue
+  // lands inside the number the recording keeps.
+  flash(b.id);
+  count += 1;
+  countEl.textContent = count;
+  logPress(b, at);
+  lastPressAt = at;
+
+  const t0 = performance.now();
+  try {
+    const response = await fetch('/label', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: b.id, clicked_unix_ms: at }),
+    });
+    if (!response.ok) throw new Error(response.status);
+    rttEl.textContent = 'rtt ' + (performance.now() - t0).toFixed(1) + 'ms';
+    setStatus('recording', 'live');
+  } catch (err) {
+    setStatus('NOT RECORDED', 'dead');
+  }
+}
+
+document.addEventListener('keydown', (event) => {
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  const at = Date.now();
+  const key = event.key.toLowerCase();
+  if (key === '?') { document.body.style.opacity = document.body.style.opacity === '0.45' ? '1' : '0.45'; return; }
+  if (held.has(key)) return;
+  const b = byKey.get(key);
+  if (!b) return;
+  held.add(key);
+  event.preventDefault();
+  send(b, at);
+});
+document.addEventListener('keyup', (e) => held.delete(e.key.toLowerCase()));
+
+setInterval(() => {
+  const s = Math.floor((Date.now() - started) / 1000);
+  sessionEl.textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  lastEl.textContent = lastPressAt ? Math.round((Date.now() - lastPressAt) / 1000) + 's' : '—';
+}, 500);
+
+fetch('/buttons')
+  .then((r) => r.json())
+  .then((data) => { buttons = data; render(); setStatus('ready', 'live'); })
+  .catch(() => setStatus('no server', 'dead'));
+</script>
+</body>
+</html>

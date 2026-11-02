@@ -23,6 +23,8 @@ pub enum Kind {
     Control,
     /// An HTTP response that differed from the previous one.
     Poll,
+    /// A key press from a spectator watching the public broadcast.
+    Label,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -50,6 +52,15 @@ pub struct Record {
     pub t_request_unix_ns: Option<u64>,
     #[serde(default)]
     pub unchanged_polls: Option<u64>,
+    /// On a label: which button was pressed.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// On a label: which way the event should push the first outcome.
+    #[serde(default)]
+    pub direction: Option<String>,
+    /// On a label: the browser clock at the press, before the loopback trip.
+    #[serde(default)]
+    pub t_click_unix_ns: Option<u64>,
 }
 
 impl Record {
@@ -60,9 +71,12 @@ impl Record {
     /// earlier than the previous response, because the change could have
     /// landed at any moment in between.
     pub fn observed_window_ns(&self) -> (u64, u64) {
-        match self.t_request_unix_ns {
-            Some(requested) => (requested, self.t_unix_ns),
-            None => (self.t_unix_ns, self.t_unix_ns),
+        match (self.t_request_unix_ns, self.t_click_unix_ns) {
+            // A poll found the change somewhere between asking and answering.
+            (Some(requested), _) => (requested, self.t_unix_ns),
+            // A press is a point in time; the loopback write is not part of it.
+            (_, Some(clicked)) => (clicked, clicked),
+            _ => (self.t_unix_ns, self.t_unix_ns),
         }
     }
 
@@ -130,6 +144,19 @@ mod tests {
         assert_eq!(parsed.observed_window_ns(), (200, 500));
         assert_eq!(parsed.uncertainty_ns(), 300);
         assert_eq!(parsed.unchanged_polls, Some(2));
+    }
+
+    #[test]
+    fn a_label_is_timed_from_the_press_not_from_the_write() {
+        let parsed = record(
+            r#"{"seq":9,"t_unix_ns":5000,"t_mono_ns":50,"kind":"label","label":"blue_fight",
+                "direction":"up","t_click_unix_ns":4000,"t_click_mono_ns":40}"#,
+        );
+        assert_eq!(parsed.kind, Kind::Label);
+        assert_eq!(parsed.label.as_deref(), Some("blue_fight"));
+        assert_eq!(parsed.direction.as_deref(), Some("up"));
+        assert_eq!(parsed.observed_window_ns(), (4000, 4000));
+        assert_eq!(parsed.uncertainty_ns(), 0);
     }
 
     #[test]

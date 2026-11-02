@@ -13,22 +13,37 @@ This is an educational project. The goal is to design an infrastructure, build
 it, measure it, and then validate or reject the hypothesis with data. It runs in
 paper mode by default and places no real orders.
 
-## 1. Hypothesis
+## 1. Hypotheses
 
-When something happens in a live game (a goal, a break point, a timeout), human
-traders on Polymarket take several seconds to react. If a system can
+**H1 — the market is slow to price a public event.** When something happens in
+a live game, traders take several seconds to react. A system that detects the
+event, estimates the new fair probability and sends an order faster than the
+market reprices would have a measurable edge window.
 
-1. detect the event from a live data feed,
-2. estimate the new fair probability,
-3. send an order to the CLOB,
+H1 has a hard dependency: a data feed faster than the market. Measurement
+killed the cheap ones — see §5 — and the paid ones publish latency figures
+that are not comparable with each other. H1 is on hold until a feed is found
+and measured.
 
-faster than the market reprices, there is a measurable edge window.
+**H2 — the order book is itself the fastest public signal.** Somebody always
+sees the game before the broadcast does: people in the venue, players, anyone
+on a lower-latency feed. If they trade, their flow moves the book *before* the
+public stream shows the event. Then the book is not the thing being raced — it
+is the detector, and it costs nothing.
 
-The questions this project is meant to answer:
+H2 inverts the problem and removes the dependency. It is also directly
+testable, because the comparison it needs is not a vendor feed but an ordinary
+spectator: somebody watching the public broadcast with no advantage at all.
+That baseline is recorded by hand (§7), and the distance between it and the
+book moving is the quantity that decides whether anything here is tradeable.
 
-- How long does the repricing window actually last?
-- What end-to-end latency is required to capture it?
-- Does the edge survive fees, spread and slippage?
+The questions, in the order they can actually be answered:
+
+- By how much does the order book lead an ordinary spectator?
+- Does an aggressive move continue far enough to clear fees and spread, or is
+  the information already fully in the price by the time it is visible?
+- How long does the repricing window last, and what latency captures it?
+- Does any of it survive slippage on books this thin?
 
 ## 2. Architecture
 
@@ -195,6 +210,36 @@ Connection lifecycle is recorded the same way. If a writer ever falls behind
 its feed, the run reports a non-zero `stalls` count: those recordings measure
 the recorder as much as the market.
 
+### Recording the spectator baseline
+
+H2 needs a reference point, and the honest one is a person watching the public
+broadcast with no advantage. `--feed labels` serves a local page whose keys
+stamp the moment you saw something happen:
+
+```bash
+cargo run --release --bin record -- --feed labels
+```
+
+<p align="center">
+  <img alt="The spectator baseline page: a grid of labelled keys for game events, a press counter, and a log of recorded presses with millisecond timestamps." src="assets/label-ui.jpg" width="100%">
+</p>
+
+A press is **not** the instant the event occurred. The stream runs seconds
+behind and a human needs a few hundred milliseconds more. That is the point:
+it marks when public information reached somebody with no edge, which is
+exactly the baseline H2 is measured against.
+
+Each button declares a `direction`, so the analysis can separate a market move
+that agrees with the event from one that does not — a market moving the wrong
+way is noise, not a reaction. The browser sends its own clock reading with the
+press, kept separate from the moment the server wrote it down; on this machine
+the gap between the two measured 2–4 ms, well inside human reaction time but
+recorded rather than assumed.
+
+The page is unauthenticated and its presses are written to disk, so it binds
+to loopback and the configuration refuses anything else. Keys only — a mouse
+costs a few hundred milliseconds, and those are the units being measured.
+
 ### Analysing
 
 ```bash
@@ -250,6 +295,10 @@ Ordered so that the hypothesis is tested before the fast system is built.
 - [ ] A sports feed fast enough to be worth trading on, found by measurement
 - [x] Offline analysis: replay, book reconstruction, lag measurement
 - [ ] Edge against latency, once a fast enough feed exists — fills §5
+- [x] Spectator baseline: hand-labelled ground truth from the public broadcast
+- [ ] Lead time of the book over the spectator baseline — the H2 measurement
+- [ ] Aggressive-move detection from order flow, validated against the labels
+- [ ] Continuation study: does a detected move clear fees and spread?
 - [ ] Live terminal dashboard: feed state, latency histograms, captured edge
 - [ ] Order book state in the live pipeline, reusing the replay reconstruction
 - [ ] Latency instrumentation end to end (HDR histograms)

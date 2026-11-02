@@ -12,6 +12,7 @@
 //! measurement is the offset between them.
 
 pub mod capture;
+pub mod labels;
 pub mod polymarket;
 pub mod session;
 pub mod sports;
@@ -79,6 +80,8 @@ pub struct Summary {
 pub enum Feed {
     Polymarket,
     Sports,
+    /// Key presses from a spectator watching the public broadcast.
+    Labels,
 }
 
 impl Feed {
@@ -86,8 +89,9 @@ impl Feed {
         match raw {
             "polymarket" => Ok(Self::Polymarket),
             "sports" => Ok(Self::Sports),
+            "labels" => Ok(Self::Labels),
             other => Err(format!(
-                "unknown feed `{other}`, expected `polymarket` or `sports`"
+                "unknown feed `{other}`, expected `polymarket`, `sports` or `labels`"
             )),
         }
     }
@@ -96,6 +100,7 @@ impl Feed {
         match self {
             Self::Polymarket => "polymarket",
             Self::Sports => "sports",
+            Self::Labels => "labels",
         }
     }
 }
@@ -107,6 +112,7 @@ pub async fn run(feed: Feed, config: &Config, shutdown: watch::Receiver<bool>) -
     let metadata = match feed {
         Feed::Polymarket => polymarket::metadata(config),
         Feed::Sports => sports::metadata(config)?,
+        Feed::Labels => labels::metadata(config)?,
     };
     let mut session = Session::open(
         feed.name(),
@@ -126,6 +132,7 @@ pub async fn run(feed: Feed, config: &Config, shutdown: watch::Receiver<bool>) -
     let outcome = match feed {
         Feed::Polymarket => polymarket::run(config, &mut session, shutdown).await,
         Feed::Sports => sports::run(config, &mut session, shutdown).await,
+        Feed::Labels => labels::run(config, &mut session, shutdown).await,
     };
     reporter.abort();
 
@@ -164,7 +171,7 @@ mod tests {
 
     #[test]
     fn feeds_round_trip_through_their_names() {
-        for feed in [Feed::Polymarket, Feed::Sports] {
+        for feed in [Feed::Polymarket, Feed::Sports, Feed::Labels] {
             assert_eq!(Feed::parse(feed.name()), Ok(feed));
         }
     }

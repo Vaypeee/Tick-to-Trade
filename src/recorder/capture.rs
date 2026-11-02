@@ -46,6 +46,18 @@ pub enum Payload {
         kind: &'static str,
         detail: Option<String>,
     },
+    /// A click on the spectator-baseline page.
+    ///
+    /// `clicked` is the browser's own clock reading at the moment of the
+    /// press, kept separate from the instant the server wrote it down. Both
+    /// run on the same machine clock, so the gap between them is the cost of
+    /// the loopback round trip and nothing else — small, but measured rather
+    /// than assumed, like every other number here.
+    Label {
+        id: String,
+        direction: String,
+        clicked: Stamp,
+    },
     /// An HTTP poll whose body differed from the previous one.
     ///
     /// A polled source cannot tell you when something happened, only that it
@@ -81,6 +93,14 @@ impl Payload {
         Self::Control {
             kind,
             detail: Some(detail.into()),
+        }
+    }
+
+    pub fn label(id: impl Into<String>, direction: impl Into<String>, clicked: Stamp) -> Self {
+        Self::Label {
+            id: id.into(),
+            direction: direction.into(),
+            clicked,
         }
     }
 
@@ -137,6 +157,21 @@ impl Capture {
                     out.push_str(r#","detail":"#);
                     push_json_string(out, detail);
                 }
+            }
+            Payload::Label {
+                id,
+                direction,
+                clicked,
+            } => {
+                out.push_str(r#""kind":"label","label":"#);
+                push_json_string(out, id);
+                out.push_str(r#","direction":"#);
+                push_json_string(out, direction);
+                let _ = write!(
+                    out,
+                    r#","t_click_unix_ns":{},"t_click_mono_ns":{}"#,
+                    clicked.unix_ns, clicked.mono_ns
+                );
             }
             Payload::Poll {
                 status,
@@ -231,6 +266,18 @@ mod tests {
     }
 
     #[test]
+    fn labels_keep_the_click_apart_from_the_write() {
+        let clicked = Stamp {
+            unix_ns: 1_699_999_999_000_000_000,
+            mono_ns: 5,
+        };
+        let out = line(Payload::label("blue_fight", "up", clicked));
+        assert!(out.contains(r#""kind":"label","label":"blue_fight""#));
+        assert!(out.contains(r#""direction":"up""#));
+        assert!(out.contains(r#""t_click_unix_ns":1699999999000000000"#));
+    }
+
+    #[test]
     fn every_line_is_valid_json_and_ends_with_a_newline() {
         for payload in [
             Payload::from_frame(r#"{"a":[1,2,{"b":"\"quoted\""}]}"#.into()),
@@ -239,6 +286,7 @@ mod tests {
             Payload::control_with("disconnected", "weird \" detail\n"),
             Payload::poll(200, stamp(), 7, r#"[{"ok":true}]"#.into()),
             Payload::poll(500, stamp(), 0, "broken \" body".into()),
+            Payload::label("odd \" id", "up", stamp()),
         ] {
             let out = line(payload);
             assert!(out.ends_with('\n'));

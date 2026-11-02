@@ -69,3 +69,67 @@ max_slippage_ticks = 2
 output_dir = "data/metrics"
 # Log a percentile summary at this interval.
 summary_interval_secs = 60
+
+# The spectator baseline. Press these as you watch the public broadcast: each
+# press records when a viewer with no advantage could have known. `direction`
+# says which way the event should push the FIRST entry of
+# `polymarket.asset_ids`, so the analysis can tell a market move that agrees
+# with the event from one that does not.
+[labels]
+# Loopback only. The page is unauthenticated and its presses are written to
+# disk, so anything else is refused.
+bind = "127.0.0.1:7878"
+
+[[labels.buttons]]
+id = "blue_fight"
+text = "Blue won the teamfight"
+key = "q"
+direction = "up"
+
+[[labels.buttons]]
+id = "red_fight"
+text = "Red won the teamfight"
+key = "w"
+direction = "down"
+
+[[labels.buttons]]
+id = "blue_pick"
+text = "Blue got a pick"
+key = "e"
+direction = "up"
+
+[[labels.buttons]]
+id = "red_pick"
+text = "Red got a pick"
+key = "r"
+direction = "down"
+
+[[labels.buttons]]
+id = "blue_objective"
+text = "Blue took an objective"
+key = "a"
+direction = "up"
+
+[[labels.buttons]]
+id = "red_objective"
+text = "Red took an objective"
+key = "s"
+direction = "down"
+
+[[labels.buttons]]
+id = "blue_structure"
+text = "Blue broke a structure"
+key = "d"
+direction = "up"
+
+[[labels.buttons]]
+id = "red_structure"
+text = "Red broke a structure"
+key = "f"
+direction = "down"
+
+[[labels.buttons]]
+id = "notable"
+text = "Something happened, unclear who gained"
+key = "x"
+direction = "neutral"

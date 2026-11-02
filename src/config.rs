@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Polling faster than this hammers the provider for no useful resolution.
 const MIN_POLL_INTERVAL_MS: u64 = 100;
@@ -21,8 +21,52 @@ pub struct Config {
     /// is actually asked for.
     #[serde(default)]
     pub sports_feed: Option<SportsFeed>,
+    /// Absent unless labels are being recorded.
+    #[serde(default)]
+    pub labels: Option<Labels>,
     #[serde(default)]
     pub recording: Recording,
+}
+
+/// The spectator baseline: a local page whose buttons stamp the moment an
+/// ordinary viewer, watching the public broadcast, could have known.
+///
+/// A click is not the instant the event happened — the stream is seconds
+/// behind and a human needs time to react. That is the point. It marks when
+/// public information arrived for someone with no advantage, which is the
+/// only reference the measurement needs: how far ahead of a normal spectator
+/// the order book already was.
+#[derive(Debug, Deserialize)]
+pub struct Labels {
+    #[serde(default = "default_bind")]
+    pub bind: String,
+    pub buttons: Vec<Button>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Button {
+    /// Short identifier written into the recording.
+    pub id: String,
+    /// What the button says on screen.
+    pub text: String,
+    /// Single character that triggers it. A mouse is far too slow for this:
+    /// the whole point is to click as close to what you saw as possible.
+    #[serde(default)]
+    pub key: String,
+    /// Which way this event should push the first outcome. The analysis uses
+    /// it to tell a move that agrees with the event from one that does not,
+    /// because a market moving the wrong way is noise, not a reaction.
+    #[serde(default)]
+    pub direction: Direction,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Direction {
+    Up,
+    Down,
+    #[default]
+    Neutral,
 }
 
 /// An HTTP source polled for live sports state.
@@ -92,6 +136,10 @@ fn default_heartbeat_polls() -> u64 {
     60
 }
 
+fn default_bind() -> String {
+    "127.0.0.1:7878".to_string()
+}
+
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path).with_context(|| {
@@ -122,6 +170,43 @@ impl Config {
         }
         if self.recording.queue_capacity == 0 {
             bail!("`recording.queue_capacity` must be greater than zero");
+        }
+        if let Some(labels) = &self.labels {
+            // The page is unauthenticated and its posts are written to disk,
+            // so it is a loopback tool and nothing else.
+            let host = labels
+                .bind
+                .rsplit_once(':')
+                .map(|(host, _)| host)
+                .unwrap_or("");
+            if !(host == "127.0.0.1" || host == "localhost" || host == "[::1]") {
+                bail!(
+                    "`labels.bind` must stay on loopback, got `{}` — the page takes                      unauthenticated writes",
+                    labels.bind
+                );
+            }
+            if labels.buttons.is_empty() {
+                bail!("`labels.buttons` is empty — there would be nothing to label with");
+            }
+            let mut ids: Vec<&str> = labels.buttons.iter().map(|b| b.id.as_str()).collect();
+            ids.sort_unstable();
+            let count = ids.len();
+            ids.dedup();
+            if ids.len() != count {
+                bail!("`labels.buttons` has duplicate ids");
+            }
+            let mut keys: Vec<&str> = labels
+                .buttons
+                .iter()
+                .map(|b| b.key.as_str())
+                .filter(|key| !key.is_empty())
+                .collect();
+            keys.sort_unstable();
+            let count = keys.len();
+            keys.dedup();
+            if keys.len() != count {
+                bail!("`labels.buttons` has two buttons on the same key");
+            }
         }
         if let Some(feed) = &self.sports_feed {
             let url = &feed.url;
@@ -221,6 +306,64 @@ mod tests {
         assert_eq!(
             feed.headers.get("x-api-key").map(String::as_str),
             Some("secret")
+        );
+    }
+
+    const BUTTONS: &str = r#"
+        [labels]
+        [[labels.buttons]]
+        id = "blue_fight"
+        text = "Blue won the fight"
+        key = "q"
+        direction = "up"
+        [[labels.buttons]]
+        id = "red_fight"
+        text = "Red won the fight"
+        key = "w"
+        direction = "down"
+    "#;
+
+    #[test]
+    fn reads_label_buttons_with_their_direction() {
+        let labels = parse(&format!("{MINIMAL}{BUTTONS}"))
+            .unwrap()
+            .labels
+            .unwrap();
+        assert_eq!(labels.bind, "127.0.0.1:7878");
+        assert_eq!(labels.buttons.len(), 2);
+        assert_eq!(labels.buttons[0].direction, Direction::Up);
+        assert_eq!(labels.buttons[1].direction, Direction::Down);
+    }
+
+    #[test]
+    fn refuses_to_expose_the_label_page_off_loopback() {
+        let raw = format!("{MINIMAL}{BUTTONS}").replace(
+            "[labels]",
+            "[labels]
+bind = \"0.0.0.0:7878\"",
+        );
+        assert!(parse(&raw).is_err());
+    }
+
+    #[test]
+    fn rejects_buttons_that_collide() {
+        let same_key = format!("{MINIMAL}{BUTTONS}").replace("key = \"w\"", "key = \"q\"");
+        assert!(parse(&same_key).is_err());
+        let same_id =
+            format!("{MINIMAL}{BUTTONS}").replace("id = \"red_fight\"", "id = \"blue_fight\"");
+        assert!(parse(&same_id).is_err());
+    }
+
+    #[test]
+    fn rejects_a_label_section_with_no_buttons() {
+        assert!(
+            parse(&format!(
+                "{MINIMAL}
+[labels]
+buttons = []
+"
+            ))
+            .is_err()
         );
     }
 

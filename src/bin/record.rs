@@ -19,14 +19,16 @@ const DEFAULT_CONFIG: &str = "config.toml";
 const USAGE: &str = "\
 usage: record [--feed <polymarket|sports>] [--config <path>] [--duration-secs <n>]
 
-    --feed <name>          polymarket (default) or sports
+    --feed <name>          polymarket (default), sports or labels
     --config <path>        configuration file (default: config.toml)
     --duration-secs <n>    stop after n seconds (default: run until Ctrl-C)
     -h, --help             print this message
 
 The Polymarket market channel is public, so no credentials are needed;
 `polymarket.asset_ids` decides what is recorded. The sports feed is whatever
-`sports_feed.url` points at, polled on `sports_feed.poll_interval_ms`.
+`sports_feed.url` points at, polled on `sports_feed.poll_interval_ms`. The
+labels feed serves a local page: press its keys as you watch the broadcast,
+and each press records when an ordinary spectator could have known.
 
 Record both at once, in two processes, so the recordings can be aligned:
 
@@ -136,6 +138,7 @@ async fn record(feed: Feed, config_path: &Path, duration: Option<Duration>) -> R
         let hint = match feed {
             Feed::Polymarket => "check `polymarket.asset_ids`",
             Feed::Sports => "check `sports_feed.url`",
+            Feed::Labels => "nothing was pressed on the label page",
         };
         tracing::warn!("nothing was recorded — {hint}");
     }

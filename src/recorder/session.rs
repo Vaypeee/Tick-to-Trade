@@ -85,6 +85,11 @@ impl Session {
         &self.path
     }
 
+    /// The monotonic origin of this recording, for stamping on another task.
+    pub fn origin(&self) -> Instant {
+        self.origin
+    }
+
     pub fn stats(&self) -> Arc<Stats> {
         Arc::clone(&self.stats)
     }
