@@ -2,11 +2,26 @@
 # config.toml is git-ignored: never commit credentials.
 
 [sports_feed]
-# Websocket endpoint of the live sports data provider.
-url = "wss://example-provider.invalid/v1/stream"
-api_key = "YOUR_API_KEY_HERE"
-# Sports or competitions to subscribe to.
-subscriptions = ["tennis", "football"]
+# HTTP endpoint polled for live state. No provider is assumed: point this at
+# whichever feed you are evaluating and let the recording measure its lag.
+#
+# The example below is a free scoreboard endpoint, useful for checking the
+# plumbing. Measure its update cadence before trusting it: a source that only
+# changes every ten seconds cannot beat a market that reprices in seconds, no
+# matter how fast you poll it.
+url = "https://site.api.espn.com/apis/site/v2/sports/soccer/ita.1/scoreboard"
+# How often to poll. Faster than the source updates buys nothing and risks
+# being rate limited; minimum 100 ms.
+poll_interval_ms = 1000
+timeout_ms = 5000
+# Write a heartbeat line after this many unchanged polls, so a quiet recording
+# is never mistaken for a dead one. Zero disables it.
+heartbeat_polls = 60
+
+# Sent with every request. This is where a paid feed authenticates. Values are
+# credentials: they are never written to the recording metadata.
+# [sports_feed.headers]
+# "x-api-key" = "YOUR_API_KEY_HERE"
 
 [polymarket]
 # Public CLOB endpoints. The market channel needs no credentials.

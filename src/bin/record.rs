@@ -1,31 +1,42 @@
-//! Records the Polymarket CLOB market channel to a timestamped JSON Lines file.
+//! Records one feed to a timestamped JSON Lines file.
 //!
-//! Run it alongside a recording of a live sports feed, then compare the two
-//! offline: that comparison is what tells you whether the repricing window the
-//! project assumes actually exists, and how long it lasts.
+//! Run one process per feed, at the same time, on the same machine. Comparing
+//! the two recordings afterwards is what tells you whether the repricing
+//! window this project assumes actually exists, and how long it lasts.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tick_to_trade::{config::Config, recorder};
+use tick_to_trade::{
+    config::Config,
+    recorder::{self, Feed},
+};
 use tokio::sync::watch;
 
 const DEFAULT_CONFIG: &str = "config.toml";
 const USAGE: &str = "\
-usage: record [--config <path>] [--duration-secs <n>]
+usage: record [--feed <polymarket|sports>] [--config <path>] [--duration-secs <n>]
 
+    --feed <name>          polymarket (default) or sports
     --config <path>        configuration file (default: config.toml)
     --duration-secs <n>    stop after n seconds (default: run until Ctrl-C)
     -h, --help             print this message
 
-Records the Polymarket CLOB market channel. The channel is public, so no
-credentials are needed; `polymarket.asset_ids` decides what is recorded.
+The Polymarket market channel is public, so no credentials are needed;
+`polymarket.asset_ids` decides what is recorded. The sports feed is whatever
+`sports_feed.url` points at, polled on `sports_feed.poll_interval_ms`.
+
+Record both at once, in two processes, so the recordings can be aligned:
+
+    record --feed polymarket &
+    record --feed sports &
 ";
 
 #[derive(Debug, PartialEq, Eq)]
 struct Args {
+    feed: Feed,
     config: PathBuf,
     duration: Option<Duration>,
 }
@@ -33,6 +44,7 @@ struct Args {
 impl Default for Args {
     fn default() -> Self {
         Self {
+            feed: Feed::Polymarket,
             config: PathBuf::from(DEFAULT_CONFIG),
             duration: None,
         }
@@ -46,6 +58,10 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Args>, String
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(None),
+            "--feed" => {
+                let value = args.next().ok_or("`--feed` expects a name")?;
+                parsed.feed = Feed::parse(&value)?;
+            }
             "--config" => {
                 let value = args.next().ok_or("`--config` expects a path")?;
                 parsed.config = PathBuf::from(value);
@@ -93,16 +109,17 @@ async fn watch_for_stop(tx: watch::Sender<bool>, duration: Option<Duration>) {
     let _ = tx.send(true);
 }
 
-async fn record(config_path: &Path, duration: Option<Duration>) -> Result<()> {
+async fn record(feed: Feed, config_path: &Path, duration: Option<Duration>) -> Result<()> {
     let config = Config::load(config_path)?;
     let (tx, rx) = watch::channel(false);
     tokio::spawn(watch_for_stop(tx, duration));
 
-    let summary = recorder::run(&config, rx)
+    let summary = recorder::run(feed, &config, rx)
         .await
         .context("recording failed")?;
 
     tracing::info!(
+        feed = feed.name(),
         lines = summary.lines,
         bytes = summary.bytes,
         stalls = summary.stalls,
@@ -116,7 +133,11 @@ async fn record(config_path: &Path, duration: Option<Duration>) -> Result<()> {
         );
     }
     if summary.lines == 0 {
-        tracing::warn!("no frames were recorded — check `polymarket.asset_ids`");
+        let hint = match feed {
+            Feed::Polymarket => "check `polymarket.asset_ids`",
+            Feed::Sports => "check `sports_feed.url`",
+        };
+        tracing::warn!("nothing was recorded — {hint}");
     }
     Ok(())
 }
@@ -142,7 +163,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    match record(&args.config, args.duration).await {
+    match record(args.feed, &args.config, args.duration).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error:#}");
@@ -164,11 +185,20 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_config_toml_and_no_time_limit() {
+    fn defaults_to_the_market_feed_and_no_time_limit() {
         let parsed = parse_args(args(&[])).unwrap().unwrap();
         assert_eq!(parsed, Args::default());
+        assert_eq!(parsed.feed, Feed::Polymarket);
         assert_eq!(parsed.config, PathBuf::from("config.toml"));
         assert!(parsed.duration.is_none());
+    }
+
+    #[test]
+    fn parses_the_feed_to_record() {
+        let parsed = parse_args(args(&["--feed", "sports"])).unwrap().unwrap();
+        assert_eq!(parsed.feed, Feed::Sports);
+        assert!(parse_args(args(&["--feed", "cricket"])).is_err());
+        assert!(parse_args(args(&["--feed"])).is_err());
     }
 
     #[test]

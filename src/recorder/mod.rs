@@ -1,31 +1,39 @@
-//! Captures a raw market data feed to disk, with a timestamp on every frame.
+//! Captures raw feeds to disk, with a timestamp on every frame.
 //!
 //! This is deliberately the first thing the project builds. The hypothesis it
 //! exists to test — that the market reprices slowly enough to be beaten — is
 //! answerable from recordings alone, and answering it that way costs weeks
 //! rather than months. Recordings also give every later benchmark something
 //! reproducible to run against, which a live feed never can.
+//!
+//! Two feeds are recorded, in the same format and against the same clocks:
+//! [`polymarket`] for the market, [`sports`] for the real-world events the
+//! market is supposed to be slow to price. Neither is useful alone. The
+//! measurement is the offset between them.
 
 pub mod capture;
 pub mod polymarket;
+pub mod session;
+pub mod sports;
 pub mod writer;
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use anyhow::{Context, Result};
-use tokio::sync::{mpsc, watch};
+use anyhow::Result;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 use crate::config::Config;
+use session::Session;
 
 /// Counters worth reporting at the end of a run.
 ///
 /// `stalls` is the one to watch: it counts the times the writer could not keep
-/// up and the read loop had to wait, which delays every timestamp taken after
+/// up and the producer had to wait, which delays every timestamp taken after
 /// it. A recording with stalls is still usable, but its latency figures then
-/// describe the recorder as much as the market.
+/// describe the recorder as much as the feed.
 #[derive(Debug, Default)]
 pub struct Stats {
     lines: AtomicU64,
@@ -66,81 +74,70 @@ pub struct Summary {
     pub reconnects: u64,
 }
 
-/// Names a recording after the second it started, so a directory of them sorts
-/// chronologically and no run can overwrite another.
-pub fn recording_path(dir: &Path, started_unix_secs: u64) -> PathBuf {
-    dir.join(format!("polymarket-{started_unix_secs}.jsonl"))
+/// Which feed to record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Feed {
+    Polymarket,
+    Sports,
 }
 
-pub fn metadata_path(recording: &Path) -> PathBuf {
-    recording.with_extension("meta.json")
+impl Feed {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "polymarket" => Ok(Self::Polymarket),
+            "sports" => Ok(Self::Sports),
+            other => Err(format!(
+                "unknown feed `{other}`, expected `polymarket` or `sports`"
+            )),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Polymarket => "polymarket",
+            Self::Sports => "sports",
+        }
+    }
 }
 
-/// Records until `shutdown` flips to `true`, then drains and flushes.
-pub async fn run(config: &Config, shutdown: watch::Receiver<bool>) -> Result<Summary> {
+/// Records `feed` until `shutdown` flips to `true`, then drains and flushes.
+pub async fn run(feed: Feed, config: &Config, shutdown: watch::Receiver<bool>) -> Result<Summary> {
     crate::tls::install_crypto_provider();
 
-    let origin = Instant::now();
-    let started_unix_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|since| since.as_secs())
-        .unwrap_or(0);
-
-    let dir = &config.recording.output_dir;
-    tokio::fs::create_dir_all(dir)
-        .await
-        .with_context(|| format!("cannot create `{}`", dir.display()))?;
-
-    let path = recording_path(dir, started_unix_secs);
-    write_metadata(&metadata_path(&path), config, started_unix_secs).await?;
-
-    let stats = Arc::new(Stats::default());
-    let (tx, rx) = mpsc::channel(config.recording.queue_capacity);
-
-    let writer = {
-        let path = path.clone();
-        let stats = Arc::clone(&stats);
-        tokio::spawn(async move { writer::run(&path, rx, stats).await })
+    let metadata = match feed {
+        Feed::Polymarket => polymarket::metadata(config),
+        Feed::Sports => sports::metadata(config)?,
     };
+    let mut session = Session::open(
+        feed.name(),
+        &config.recording.output_dir,
+        config.recording.queue_capacity,
+        metadata,
+    )
+    .await?;
+    tracing::info!(feed = feed.name(), path = %session.path().display(), "recording started");
 
-    tracing::info!(path = %path.display(), "recording started");
-    let reporter = tokio::spawn(report_periodically(
-        Arc::clone(&stats),
+    let reporter = spawn_reporter(
+        session.stats(),
         Duration::from_secs(config.recording.stats_interval_secs.max(1)),
         shutdown.clone(),
-    ));
+    );
 
-    let outcome = polymarket::run(config, tx, origin, shutdown, Arc::clone(&stats)).await;
+    let outcome = match feed {
+        Feed::Polymarket => polymarket::run(config, &mut session, shutdown).await,
+        Feed::Sports => sports::run(config, &mut session, shutdown).await,
+    };
     reporter.abort();
 
-    // Dropping the sender inside `polymarket::run` ends the loop of the writer
-    // once the queue is empty. Joining it is what makes the last frames
-    // durable, so it happens even when the feed itself failed.
-    writer
-        .await
-        .context("writer task panicked")?
-        .context("writer task failed")?;
-    outcome?;
-
-    Ok(stats.snapshot())
+    session.finish(outcome).await
 }
 
-async fn write_metadata(path: &Path, config: &Config, started_unix_secs: u64) -> Result<()> {
-    let metadata = serde_json::json!({
-        "recorder_version": env!("CARGO_PKG_VERSION"),
-        "started_unix_secs": started_unix_secs,
-        "ws_url": config.polymarket.ws_url,
-        "asset_ids": config.polymarket.asset_ids,
-        "ping_interval_secs": config.polymarket.ping_interval_secs,
-        "clocks": {
-            "t_mono_ns": "nanoseconds since the recorder started; use this for durations",
-            "t_unix_ns": "wall clock at receipt; the only clock comparable across processes, and it can step under NTP",
-        },
-    });
-    let encoded = serde_json::to_string_pretty(&metadata)? + "\n";
-    tokio::fs::write(path, encoded)
-        .await
-        .with_context(|| format!("cannot write `{}`", path.display()))
+fn spawn_reporter(
+    stats: Arc<Stats>,
+    every: Duration,
+    shutdown: watch::Receiver<bool>,
+) -> JoinHandle<()> {
+    tokio::spawn(report_periodically(stats, every, shutdown))
 }
 
 async fn report_periodically(
@@ -166,15 +163,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recordings_are_named_after_their_start_second() {
-        let path = recording_path(Path::new("data/recordings"), 1_700_000_000);
-        assert!(path.ends_with("polymarket-1700000000.jsonl"));
+    fn feeds_round_trip_through_their_names() {
+        for feed in [Feed::Polymarket, Feed::Sports] {
+            assert_eq!(Feed::parse(feed.name()), Ok(feed));
+        }
     }
 
     #[test]
-    fn metadata_sits_beside_its_recording() {
-        let recording = recording_path(Path::new("data"), 1);
-        assert!(metadata_path(&recording).ends_with("polymarket-1.meta.json"));
+    fn unknown_feeds_are_rejected() {
+        assert!(Feed::parse("tennis").is_err());
     }
 
     #[test]

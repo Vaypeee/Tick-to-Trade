@@ -46,6 +46,21 @@ pub enum Payload {
         kind: &'static str,
         detail: Option<String>,
     },
+    /// An HTTP poll whose body differed from the previous one.
+    ///
+    /// A polled source cannot tell you when something happened, only that it
+    /// had happened by the time you asked. Recording the request stamp as well
+    /// as the response stamp bounds the change between two instants the
+    /// recorder actually observed, and `unchanged_polls` says how wide that
+    /// bound is. Pretending a poll is an event timestamp is the easiest way to
+    /// manufacture an edge that is not there.
+    Poll {
+        status: u16,
+        requested: Stamp,
+        unchanged_polls: u64,
+        body: String,
+        body_is_json: bool,
+    },
 }
 
 impl Payload {
@@ -66,6 +81,17 @@ impl Payload {
         Self::Control {
             kind,
             detail: Some(detail.into()),
+        }
+    }
+
+    pub fn poll(status: u16, requested: Stamp, unchanged_polls: u64, body: String) -> Self {
+        let body_is_json = serde_json::from_str::<&RawValue>(&body).is_ok();
+        Self::Poll {
+            status,
+            requested,
+            unchanged_polls,
+            body,
+            body_is_json,
         }
     }
 }
@@ -110,6 +136,24 @@ impl Capture {
                 if let Some(detail) = detail {
                     out.push_str(r#","detail":"#);
                     push_json_string(out, detail);
+                }
+            }
+            Payload::Poll {
+                status,
+                requested,
+                unchanged_polls,
+                body,
+                body_is_json,
+            } => {
+                let _ = write!(
+                    out,
+                    r#""kind":"poll","status":{status},"t_request_unix_ns":{},"t_request_mono_ns":{},"unchanged_polls":{unchanged_polls},"payload":"#,
+                    requested.unix_ns, requested.mono_ns
+                );
+                if *body_is_json {
+                    out.push_str(body.trim());
+                } else {
+                    push_json_string(out, body);
                 }
             }
         }
@@ -167,12 +211,34 @@ mod tests {
     }
 
     #[test]
+    fn polls_record_both_ends_of_the_detection_window() {
+        let requested = Stamp {
+            unix_ns: 1_699_999_999_000_000_000,
+            mono_ns: 11,
+        };
+        let out = line(Payload::poll(200, requested, 3, r#"{"score":1}"#.into()));
+        assert!(out.contains(r#""kind":"poll","status":200"#));
+        assert!(out.contains(r#""t_request_unix_ns":1699999999000000000"#));
+        assert!(out.contains(r#""t_request_mono_ns":11"#));
+        assert!(out.contains(r#""unchanged_polls":3"#));
+        assert!(out.contains(r#""payload":{"score":1}"#));
+    }
+
+    #[test]
+    fn poll_bodies_that_are_not_json_are_escaped() {
+        let out = line(Payload::poll(503, stamp(), 0, "<html>down</html>".into()));
+        assert!(out.contains(r#""payload":"<html>down</html>""#));
+    }
+
+    #[test]
     fn every_line_is_valid_json_and_ends_with_a_newline() {
         for payload in [
             Payload::from_frame(r#"{"a":[1,2,{"b":"\"quoted\""}]}"#.into()),
             Payload::from_frame("not json at all \" \n".into()),
             Payload::control("connected"),
             Payload::control_with("disconnected", "weird \" detail\n"),
+            Payload::poll(200, stamp(), 7, r#"[{"ok":true}]"#.into()),
+            Payload::poll(500, stamp(), 0, "broken \" body".into()),
         ] {
             let out = line(payload);
             assert!(out.ends_with('\n'));

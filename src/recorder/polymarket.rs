@@ -8,17 +8,16 @@
 //! because which fields matter is one of the things the project does not know
 //! yet, and a raw recording can be re-analysed while a parsed one cannot.
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc::{Sender, error::TrySendError};
+use serde_json::Value;
 use tokio::sync::watch;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use super::Stats;
-use super::capture::{Capture, Payload, Stamp};
+use super::capture::Payload;
+use super::session::Session;
 use crate::config::Config;
 
 /// Shortest and longest wait between reconnection attempts.
@@ -58,6 +57,15 @@ impl Default for Backoff {
     }
 }
 
+/// Describes the recording for its metadata sidecar.
+pub fn metadata(config: &Config) -> Value {
+    serde_json::json!({
+        "ws_url": config.polymarket.ws_url,
+        "asset_ids": config.polymarket.asset_ids,
+        "ping_interval_secs": config.polymarket.ping_interval_secs,
+    })
+}
+
 /// Why a connection ended.
 enum Disconnect {
     /// The recorder was asked to stop.
@@ -73,17 +81,15 @@ enum Disconnect {
 /// should survive the network going away for a while.
 pub async fn run(
     config: &Config,
-    tx: Sender<Capture>,
-    origin: Instant,
+    session: &mut Session,
     mut shutdown: watch::Receiver<bool>,
-    stats: Arc<Stats>,
 ) -> Result<()> {
     let mut backoff = Backoff::new();
-    let mut seq: u64 = 0;
+    let stats = session.stats();
 
     while !*shutdown.borrow() {
         let started = Instant::now();
-        let outcome = stream_once(config, &tx, origin, &mut shutdown, &stats, &mut seq).await;
+        let outcome = stream_once(config, session, &mut shutdown).await;
         let connected_for = started.elapsed();
 
         let reason = match outcome {
@@ -93,15 +99,9 @@ pub async fn run(
             // so it is recorded and retried rather than propagated.
             Err(error) => format!("{error:#}"),
         };
-
-        emit(
-            &tx,
-            origin,
-            &stats,
-            &mut seq,
-            Payload::control_with("disconnected", reason),
-        )
-        .await?;
+        session
+            .emit(Payload::control_with("disconnected", reason))
+            .await?;
 
         if connected_for >= STABLE_AFTER {
             backoff.reset();
@@ -119,18 +119,15 @@ pub async fn run(
         stats.on_reconnect();
     }
 
-    emit(&tx, origin, &stats, &mut seq, Payload::control("stopped")).await?;
+    session.emit(Payload::control("stopped")).await?;
     Ok(())
 }
 
 /// One connection, from handshake to disconnect.
 async fn stream_once(
     config: &Config,
-    tx: &Sender<Capture>,
-    origin: Instant,
+    session: &mut Session,
     shutdown: &mut watch::Receiver<bool>,
-    stats: &Stats,
-    seq: &mut u64,
 ) -> Result<Disconnect> {
     let url = &config.polymarket.ws_url;
     let (socket, _) = connect_async(url)
@@ -147,18 +144,13 @@ async fn stream_once(
         .await
         .context("cannot send the subscribe frame")?;
 
-    emit(tx, origin, stats, seq, Payload::control("connected")).await?;
-    emit(
-        tx,
-        origin,
-        stats,
-        seq,
-        Payload::control_with(
+    session.emit(Payload::control("connected")).await?;
+    session
+        .emit(Payload::control_with(
             "subscribed",
             format!("{} asset ids", config.polymarket.asset_ids.len()),
-        ),
-    )
-    .await?;
+        ))
+        .await?;
     tracing::info!(assets = config.polymarket.asset_ids.len(), "subscribed");
 
     let mut keepalive =
@@ -171,20 +163,20 @@ async fn stream_once(
                 // Taken before anything looks at the frame. Every line of
                 // parsing added above this point is latency attributed to the
                 // market that actually belongs to the recorder.
-                let stamp = Stamp::now(origin);
+                let stamp = session.stamp();
                 let Some(frame) = frame else {
                     return Ok(Disconnect::Remote("stream ended".into()));
                 };
                 match frame.context("websocket error")? {
                     Message::Text(text) => {
                         let payload = Payload::from_frame(text.as_str().to_owned());
-                        dispatch(tx, stats, Capture::new(next(seq), stamp, payload)).await?;
+                        session.emit_at(stamp, payload).await?;
                     }
                     Message::Binary(bytes) => {
                         let payload = Payload::from_frame(
                             String::from_utf8_lossy(&bytes).into_owned(),
                         );
-                        dispatch(tx, stats, Capture::new(next(seq), stamp, payload)).await?;
+                        session.emit_at(stamp, payload).await?;
                     }
                     Message::Close(frame) => {
                         let reason = frame
@@ -206,40 +198,6 @@ async fn stream_once(
             }
             _ = shutdown.changed() => return Ok(Disconnect::Shutdown),
         }
-    }
-}
-
-fn next(seq: &mut u64) -> u64 {
-    *seq += 1;
-    *seq
-}
-
-async fn emit(
-    tx: &Sender<Capture>,
-    origin: Instant,
-    stats: &Stats,
-    seq: &mut u64,
-    payload: Payload,
-) -> Result<()> {
-    let capture = Capture::new(next(seq), Stamp::now(origin), payload);
-    dispatch(tx, stats, capture).await
-}
-
-/// Hands a record to the writer.
-///
-/// A full queue is never resolved by dropping the record: a hole in a
-/// recording is worse than a delay in it. The wait is counted instead, so the
-/// analysis can tell which recordings had the recorder in the way.
-async fn dispatch(tx: &Sender<Capture>, stats: &Stats, capture: Capture) -> Result<()> {
-    match tx.try_send(capture) {
-        Ok(()) => Ok(()),
-        Err(TrySendError::Full(capture)) => {
-            stats.on_stall();
-            tx.send(capture)
-                .await
-                .map_err(|_| anyhow!("the writer stopped while the queue was full"))
-        }
-        Err(TrySendError::Closed(_)) => bail!("the writer stopped"),
     }
 }
 
@@ -266,14 +224,5 @@ mod tests {
         }
         backoff.reset();
         assert_eq!(backoff.next_delay(), MIN_DELAY);
-    }
-
-    #[test]
-    fn sequence_numbers_are_dense_and_increasing() {
-        let mut seq = 0;
-        assert_eq!(
-            (0..3).map(|_| next(&mut seq)).collect::<Vec<_>>(),
-            [1, 2, 3]
-        );
     }
 }

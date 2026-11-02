@@ -4,16 +4,42 @@
 //! and fields are ignored, so `config.toml` can describe stages that are not
 //! implemented yet without breaking the ones that are.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+/// Polling faster than this hammers the provider for no useful resolution.
+const MIN_POLL_INTERVAL_MS: u64 = 100;
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub polymarket: Polymarket,
+    /// Absent until a sports feed has been chosen. The market recorder does
+    /// not need one, so its absence is not an error until a sports recording
+    /// is actually asked for.
+    #[serde(default)]
+    pub sports_feed: Option<SportsFeed>,
     #[serde(default)]
     pub recording: Recording,
+}
+
+/// An HTTP source polled for live sports state.
+#[derive(Debug, Deserialize)]
+pub struct SportsFeed {
+    pub url: String,
+    #[serde(default = "default_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+    #[serde(default = "default_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Sent with every request. A paid feed authenticates here; the values are
+    /// credentials and are never written to the recording metadata.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    /// Write a heartbeat after this many unchanged polls. Zero disables it.
+    #[serde(default = "default_heartbeat_polls")]
+    pub heartbeat_polls: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -54,6 +80,18 @@ fn default_ping_interval_secs() -> u64 {
     10
 }
 
+fn default_poll_interval_ms() -> u64 {
+    1_000
+}
+
+fn default_timeout_ms() -> u64 {
+    5_000
+}
+
+fn default_heartbeat_polls() -> u64 {
+    60
+}
+
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path).with_context(|| {
@@ -84,6 +122,21 @@ impl Config {
         }
         if self.recording.queue_capacity == 0 {
             bail!("`recording.queue_capacity` must be greater than zero");
+        }
+        if let Some(feed) = &self.sports_feed {
+            let url = &feed.url;
+            if !(url.starts_with("https://") || url.starts_with("http://")) {
+                bail!("`sports_feed.url` must be an HTTP URL, got `{url}`");
+            }
+            if feed.poll_interval_ms < MIN_POLL_INTERVAL_MS {
+                bail!(
+                    "`sports_feed.poll_interval_ms` must be at least {MIN_POLL_INTERVAL_MS}; \
+                     polling faster buys no resolution and risks being rate limited"
+                );
+            }
+            if feed.timeout_ms == 0 {
+                bail!("`sports_feed.timeout_ms` must be greater than zero");
+            }
         }
         Ok(())
     }
@@ -129,6 +182,46 @@ mod tests {
             ws_url = "wss://example.invalid/ws/market"
         "#;
         assert!(parse(raw).is_err());
+    }
+
+    #[test]
+    fn a_sports_feed_is_optional_but_validated_when_present() {
+        assert!(parse(MINIMAL).unwrap().sports_feed.is_none());
+
+        let good =
+            format!("{MINIMAL}\n[sports_feed]\nurl = \"https://example.invalid/scoreboard\"\n");
+        let feed = parse(&good).unwrap().sports_feed.unwrap();
+        assert_eq!(feed.poll_interval_ms, 1_000);
+        assert_eq!(feed.timeout_ms, 5_000);
+        assert_eq!(feed.heartbeat_polls, 60);
+        assert!(feed.headers.is_empty());
+    }
+
+    #[test]
+    fn rejects_a_sports_feed_that_would_hammer_the_provider() {
+        let raw = format!(
+            "{MINIMAL}\n[sports_feed]\nurl = \"https://example.invalid\"\npoll_interval_ms = 5\n"
+        );
+        assert!(parse(&raw).is_err());
+    }
+
+    #[test]
+    fn rejects_a_sports_feed_that_is_not_http() {
+        let raw = format!("{MINIMAL}\n[sports_feed]\nurl = \"wss://example.invalid\"\n");
+        assert!(parse(&raw).is_err());
+    }
+
+    #[test]
+    fn reads_sports_feed_headers() {
+        let raw = format!(
+            "{MINIMAL}\n[sports_feed]\nurl = \"https://example.invalid\"\n\
+             [sports_feed.headers]\n\"x-api-key\" = \"secret\"\n"
+        );
+        let feed = parse(&raw).unwrap().sports_feed.unwrap();
+        assert_eq!(
+            feed.headers.get("x-api-key").map(String::as_str),
+            Some("secret")
+        );
     }
 
     #[test]

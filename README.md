@@ -1,9 +1,9 @@
 # Tick to trade
 
-> **Status: early development.** The market data recorder works and is in use.
-> Nothing downstream of it exists yet, and no latency numbers or results have
-> been measured — every table below marked *not measured* is a placeholder,
-> not a claim.
+> **Status: early development.** Both recorders work and are in use. Nothing
+> downstream of them exists yet, and no end-to-end latency numbers have been
+> measured — every table below marked *not measured* is a placeholder, not a
+> claim.
 
 A low-latency, event-driven inference pipeline in Rust, built to test one
 hypothesis: during live sports events, Polymarket prices lag behind real-world
@@ -86,7 +86,19 @@ percentiles to mean anything.
 
 ## 5. Results
 
-Nothing measured yet. This section will record, with the sample size and the
+Nothing conclusive yet. One preliminary observation, kept here because it
+shapes everything downstream:
+
+**A free scoreboard endpoint updates far too slowly to be the input.** Polling
+ESPN at 1 Hz during a Serie A match, the response changed only every 10–20
+seconds; HTTP round-trip was a median 87 ms, so the limit is the source
+cadence, not the transport. A feed with 10-second granularity cannot beat a
+market that reprices in seconds, however fast the system behind it is.
+*Sample: 100 polls, one match, one source — enough to disqualify a candidate
+feed, not enough to characterise one.*
+
+This is the measurement the project exists to make, applied first to its own
+inputs. The remaining sections will record, with the sample size and the
 measurement method:
 
 - the observed repricing window,
@@ -115,39 +127,56 @@ cargo build --release
 cp config.example.toml config.toml
 ```
 
-### Recording the market
+### Recording
 
-The recorder is the part that works today, and it is deliberately the first
-thing built: the hypothesis above is answerable from recordings alone, without
-a fast system. Recordings are also what makes every later benchmark
+The recorders are the part that works today, and they are deliberately the
+first thing built: the hypothesis above is answerable from recordings alone,
+without a fast system. Recordings are also what makes every later benchmark
 reproducible, which a live feed can never be.
 
-The CLOB market channel is public, so no credentials are needed. Put the
-outcome token ids you want in `polymarket.asset_ids` — they are the
-`clobTokenIds` of a market on the [Gamma API](https://gamma-api.polymarket.com/markets?closed=false&limit=5) —
-and run:
+Record both feeds at once, in two processes, so the two can be aligned:
 
 ```bash
-cargo run --release --bin record -- --duration-secs 600
+cargo run --release --bin record -- --feed polymarket &
+cargo run --release --bin record -- --feed sports &
 ```
 
-Each run writes `data/recordings/polymarket-<unix-secs>.jsonl` plus a
-`.meta.json` sidecar describing what was recorded and with which clocks. One
-JSON object per line:
+**The market.** The CLOB market channel is public, so no credentials are
+needed. Put the outcome token ids you want in `polymarket.asset_ids` — they
+are the `clobTokenIds` of a market on the
+[Gamma API](https://gamma-api.polymarket.com/markets?closed=false&limit=5).
+
+**The sports feed.** No provider is hard-coded. Vendors publish latency
+figures that are not comparable with each other and that none of them measures
+the same way, so `sports_feed.url` points at whatever source is being
+evaluated and the recording measures its lag directly, against the same clock
+as the market.
+
+Each run writes `data/recordings/<feed>-<unix-secs>.jsonl` plus a `.meta.json`
+sidecar describing what was recorded and with which clocks. One JSON object
+per line:
 
 | Field | Meaning |
 |---|---|
-| `seq` | Dense counter; a gap means a lost record, not a quiet market |
+| `seq` | Dense counter; a gap means a lost record, not a quiet feed |
 | `t_mono_ns` | Monotonic nanoseconds since start — use this for durations |
-| `t_unix_ns` | Wall clock at receipt — the only clock comparable across processes |
-| `kind` | `data` (a feed frame, stored verbatim), `text`, or `control` |
+| `t_unix_ns` | Wall clock at receipt — the only clock comparable across recordings |
+| `kind` | `data` (a websocket frame), `poll` (a changed HTTP response), `text`, or `control` |
 
 Both clocks are kept because neither is enough alone: the monotonic one cannot
 jump when NTP steps the system clock, and the wall clock is the only one that
-lines a Polymarket recording up with a sports feed recorded separately.
-Connection lifecycle events are written as `control` records, so a gap in a
-recording is never mistaken for a quiet market. If the writer ever falls behind
-the socket, the run reports a non-zero `stalls` count: those recordings measure
+lines a market recording up with a sports recording taken by another process.
+
+A polled source cannot say when something happened, only that it had happened
+by the time you asked. Every `poll` record therefore carries `t_request_*` as
+well, and `unchanged_polls` — the number of identical responses before it. The
+change happened somewhere inside that window, and the record says how wide it
+is instead of assuming it away.
+
+Only changed responses are stored; unchanged ones become a periodic
+`unchanged` heartbeat, so a quiet recording is never mistaken for a dead one.
+Connection lifecycle is recorded the same way. If a writer ever falls behind
+its feed, the run reports a non-zero `stalls` count: those recordings measure
 the recorder as much as the market.
 
 ### Running the pipeline
@@ -166,9 +195,11 @@ holds credentials and is git-ignored, as is `data/`; only
 Ordered so that the hypothesis is tested before the fast system is built.
 
 - [x] Recorder for the Polymarket CLOB market channel
-- [ ] Recorder for a live sports feed, and a measurement of its own lag
+- [x] Recorder for a sports feed, provider-agnostic, measuring its own lag
+- [ ] A sports feed fast enough to be worth trading on, found by measurement
 - [ ] Offline analysis: repricing window, edge against latency — fills §5
 - [ ] Replay mode over recordings, for reproducible benchmarks
+- [ ] Live terminal dashboard: feed state, latency histograms, captured edge
 - [ ] Order book state and normalised event stream
 - [ ] Latency instrumentation end to end (HDR histograms)
 - [ ] First fair-value model, however crude
