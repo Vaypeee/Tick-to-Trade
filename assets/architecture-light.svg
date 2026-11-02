@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 300" width="980" height="300" role="img" aria-label="Two websocket feeds enter a single-threaded event loop: the sports feed is parsed into events, scored into a fair probability and compared against the order book before an order is sent to the Polymarket CLOB. Latency is timestamped at every boundary.">
+  <title>Tick to trade — hot path</title>
+  <desc>The sports feed flows through ingestion, inference and decision inside a single-threaded tokio event loop, then out through execution to the Polymarket CLOB API. A separate websocket keeps order book state, which the decision stage reads for best bid and ask.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#656d76"/>
+    </marker>
+    <marker id="arrow-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0969da"/>
+    </marker>
+  </defs>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+
+    <!-- event loop boundary -->
+    <rect x="200" y="48" width="470" height="192" rx="10" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1" stroke-dasharray="5 4"/>
+    <text x="435" y="70" text-anchor="middle" font-size="11" fill="#656d76">single-threaded async event loop (tokio)</text>
+
+    <!-- sources -->
+    <rect x="16" y="95" width="148" height="46" rx="6" fill="#ffffff" stroke="#afb8c1"/>
+    <text x="90" y="122" text-anchor="middle" font-size="12.5" fill="#1f2328">Live sports feed</text>
+
+    <rect x="16" y="172" width="148" height="46" rx="6" fill="#ffffff" stroke="#afb8c1"/>
+    <text x="90" y="199" text-anchor="middle" font-size="12.5" fill="#1f2328">Polymarket CLOB</text>
+
+    <!-- pipeline stages -->
+    <rect x="220" y="92" width="118" height="52" rx="6" fill="#ffffff" stroke="#afb8c1"/>
+    <text x="279" y="114" text-anchor="middle" font-size="12.5" fill="#1f2328">Ingestion</text>
+    <text x="279" y="130" text-anchor="middle" font-size="10" fill="#656d76">parse · normalise</text>
+
+    <rect x="372" y="92" width="118" height="52" rx="6" fill="#ffffff" stroke="#afb8c1"/>
+    <text x="431" y="114" text-anchor="middle" font-size="12.5" fill="#1f2328">Inference</text>
+    <text x="431" y="130" text-anchor="middle" font-size="10" fill="#656d76">fair probability</text>
+
+    <rect x="524" y="92" width="118" height="52" rx="6" fill="#ffffff" stroke="#afb8c1"/>
+    <text x="583" y="114" text-anchor="middle" font-size="12.5" fill="#1f2328">Decision</text>
+    <text x="583" y="130" text-anchor="middle" font-size="10" fill="#656d76">edge &gt; cost</text>
+
+    <rect x="524" y="172" width="118" height="46" rx="6" fill="#ffffff" stroke="#afb8c1"/>
+    <text x="583" y="192" text-anchor="middle" font-size="12.5" fill="#1f2328">Order book</text>
+    <text x="583" y="207" text-anchor="middle" font-size="10" fill="#656d76">best bid / ask</text>
+
+    <rect x="706" y="92" width="128" height="52" rx="6" fill="#ffffff" stroke="#afb8c1"/>
+    <text x="770" y="114" text-anchor="middle" font-size="12.5" fill="#1f2328">Execution</text>
+    <text x="770" y="130" text-anchor="middle" font-size="10" fill="#656d76">pre-built order</text>
+
+    <rect x="872" y="92" width="92" height="52" rx="6" fill="#ffffff" stroke="#afb8c1"/>
+    <text x="918" y="123" text-anchor="middle" font-size="12.5" fill="#1f2328">CLOB API</text>
+
+    <!-- hot path -->
+    <g stroke="#0969da" stroke-width="1.6" fill="none" marker-end="url(#arrow-hot)">
+      <line x1="164" y1="118" x2="214" y2="118"/>
+      <line x1="338" y1="118" x2="366" y2="118"/>
+      <line x1="490" y1="118" x2="518" y2="118"/>
+      <line x1="642" y1="118" x2="700" y2="118"/>
+      <line x1="834" y1="118" x2="866" y2="118"/>
+    </g>
+    <g font-size="9.5" fill="#0969da" text-anchor="middle">
+      <text x="189" y="111">ws</text>
+      <text x="352" y="111">event</text>
+      <text x="504" y="111">fair p</text>
+      <text x="671" y="111">order</text>
+    </g>
+
+    <!-- order book state path -->
+    <g stroke="#656d76" stroke-width="1.3" fill="none" marker-end="url(#arrow)">
+      <line x1="164" y1="195" x2="518" y2="195"/>
+      <line x1="583" y1="172" x2="583" y2="150"/>
+    </g>
+    <text x="330" y="188" text-anchor="middle" font-size="9.5" fill="#656d76">ws · book updates</text>
+
+    <!-- latency bracket -->
+    <path d="M16,258 L16,268 L964,268 L964,258" fill="none" stroke="#0969da" stroke-width="1.3"/>
+    <text x="490" y="287" text-anchor="middle" font-size="10.5" fill="#0969da">end-to-end latency — timestamped at every boundary (see §4)</text>
+
+  </g>
+</svg>

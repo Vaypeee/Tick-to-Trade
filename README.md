@@ -31,21 +31,22 @@ The questions this project is meant to answer:
 
 ## 2. Architecture
 
-```
-[Live sports feed] ───ws──▶ ┌──────────────────────────────┐
-                            │ Ingestion (parsing, norm.)   │
-[Polymarket CLOB ws] ──────▶ │ Order book state             │
-                            │ Inference (fair probability) │──▶ [Execution] ──▶ CLOB API
-                            │ Decision (edge > threshold)  │
-                            └──────────────────────────────┘
-                             single-threaded async event loop (tokio)
-                                          │
-                                          ▼
-                            [Metrics: latency histograms, simulated PnL]
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
+    <img alt="Two websocket feeds enter a single-threaded event loop: the sports feed is parsed into events, scored into a fair probability, and compared against order book state before an order is sent to the Polymarket CLOB. Latency is timestamped at every boundary." src="assets/architecture-light.svg" width="100%">
+  </picture>
+</p>
 
-- **Ingestion** — websocket connections to the sports data feed and to the
-  Polymarket order book; zero-copy parsing where the format allows it.
+The sports feed drives the hot path: every stage between a real-world event and
+an order leaving the process is on the latency budget. The CLOB websocket is a
+separate, continuous stream — it keeps order book state so the decision stage
+can price the spread it would actually cross.
+
+- **Ingestion** — websocket client for the sports feed, parsing each frame into
+  a normalised event; zero-copy where the format allows it.
+- **Order book state** — a second websocket client maintaining the CLOB book,
+  so the decision stage prices against the spread it would actually cross.
 - **Inference** — a lightweight model estimating the post-event probability.
 - **Decision** — trade only if the estimated edge exceeds fees + spread + a
   safety margin.
