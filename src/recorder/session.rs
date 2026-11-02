@@ -16,6 +16,7 @@ use tokio::sync::mpsc::{self, Sender, error::TrySendError};
 use tokio::task::JoinHandle;
 
 use super::capture::{Capture, Payload, Stamp};
+use super::metrics::Timings;
 use super::writer;
 use super::{Stats, Summary};
 
@@ -35,7 +36,14 @@ pub struct Session {
     seq: u64,
     tx: Sender<Capture>,
     stats: Arc<Stats>,
-    writer: JoinHandle<Result<()>>,
+    writer: JoinHandle<Result<Timings>>,
+    producer: Option<Timings>,
+}
+
+/// Everything a finished recording has to say about itself.
+pub struct Outcome {
+    pub summary: Summary,
+    pub timings: Timings,
 }
 
 impl Session {
@@ -68,7 +76,7 @@ impl Session {
         let writer = {
             let path = path.clone();
             let stats = Arc::clone(&stats);
-            tokio::spawn(async move { writer::run(&path, rx, stats).await })
+            tokio::spawn(async move { writer::run(&path, rx, stats, origin).await })
         };
 
         Ok(Self {
@@ -78,6 +86,7 @@ impl Session {
             tx,
             stats,
             writer,
+            producer: None,
         })
     }
 
@@ -88,6 +97,14 @@ impl Session {
     /// The monotonic origin of this recording, for stamping on another task.
     pub fn origin(&self) -> Instant {
         self.origin
+    }
+
+    /// Hands over the histograms the producing task kept.
+    ///
+    /// Each task owns its own and they are merged once, here, so nothing on
+    /// the hot path ever waits on a lock to record a measurement.
+    pub fn submit_timings(&mut self, timings: Timings) {
+        self.producer = Some(timings);
     }
 
     pub fn stats(&self) -> Arc<Stats> {
@@ -135,17 +152,27 @@ impl Session {
     /// The writer is joined even when the feed failed: whatever was captured
     /// before the failure is still worth keeping, and `outcome` is only
     /// propagated once the file is durable.
-    pub async fn finish(self, outcome: Result<()>) -> Result<Summary> {
+    pub async fn finish(self, outcome: Result<()>) -> Result<Outcome> {
         let Self {
-            tx, writer, stats, ..
+            tx,
+            writer,
+            stats,
+            producer,
+            ..
         } = self;
         drop(tx);
-        writer
+        let mut timings = writer
             .await
             .context("writer task panicked")?
             .context("writer task failed")?;
+        if let Some(producer) = producer {
+            timings.merge(producer);
+        }
         outcome?;
-        Ok(stats.snapshot())
+        Ok(Outcome {
+            summary: stats.snapshot(),
+            timings,
+        })
     }
 }
 

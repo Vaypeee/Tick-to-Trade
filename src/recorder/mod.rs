@@ -13,6 +13,7 @@
 
 pub mod capture;
 pub mod labels;
+pub mod metrics;
 pub mod polymarket;
 pub mod session;
 pub mod sports;
@@ -27,7 +28,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::config::Config;
-use session::Session;
+use session::{Outcome, Session};
 
 /// Counters worth reporting at the end of a run.
 ///
@@ -106,7 +107,7 @@ impl Feed {
 }
 
 /// Records `feed` until `shutdown` flips to `true`, then drains and flushes.
-pub async fn run(feed: Feed, config: &Config, shutdown: watch::Receiver<bool>) -> Result<Summary> {
+pub async fn run(feed: Feed, config: &Config, shutdown: watch::Receiver<bool>) -> Result<Outcome> {
     crate::tls::install_crypto_provider();
 
     // Anything that can fail on startup fails here, before a recording file

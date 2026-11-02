@@ -11,7 +11,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tick_to_trade::{
     config::Config,
-    recorder::{self, Feed},
+    recorder::{
+        self, Feed,
+        metrics::{Timings, humanise},
+    },
 };
 use tokio::sync::watch;
 
@@ -117,9 +120,10 @@ async fn record(feed: Feed, config_path: &Path, duration: Option<Duration>) -> R
     let (tx, rx) = watch::channel(false);
     tokio::spawn(watch_for_stop(tx, duration));
 
-    let summary = recorder::run(feed, &config, rx)
+    let outcome = recorder::run(feed, &config, rx)
         .await
         .context("recording failed")?;
+    let summary = outcome.summary;
 
     tracing::info!(
         feed = feed.name(),
@@ -135,6 +139,7 @@ async fn record(feed: Feed, config_path: &Path, duration: Option<Duration>) -> R
             "the writer fell behind; timestamps after a stall include recorder delay"
         );
     }
+    report_latency(&outcome.timings);
     if summary.lines == 0 {
         let hint = match feed {
             Feed::Polymarket => "check `polymarket.asset_ids`",
@@ -144,6 +149,38 @@ async fn record(feed: Feed, config_path: &Path, duration: Option<Duration>) -> R
         tracing::warn!("nothing was recorded — {hint}");
     }
     Ok(())
+}
+
+/// Prints what the recorder cost itself.
+///
+/// This is in-process latency only: from a frame leaving the socket to the
+/// line reaching the operating system. The network before it and the disk
+/// after it are not measured here and are not claimed.
+fn report_latency(timings: &Timings) {
+    let report = timings.report();
+    if report.is_empty() {
+        return;
+    }
+
+    println!("\nin-process latency, socket to write");
+    println!(
+        "  {:<12} {:>9} {:>9} {:>9} {:>9} {:>8}",
+        "stage", "p50", "p90", "p99", "max", "n"
+    );
+    for line in &report {
+        println!(
+            "  {:<12} {:>9} {:>9} {:>9} {:>9} {:>8}",
+            line.stage.label(),
+            humanise(line.p50_ns),
+            humanise(line.p90_ns),
+            humanise(line.p99_ns),
+            humanise(line.max_ns),
+            line.count,
+        );
+    }
+    println!("  * feed offset is the gap between the exchange timestamp and our");
+    println!("    receipt: network delay plus clock disagreement, in milliseconds of");
+    println!("    resolution. It is not a latency and cannot be split into one.");
 }
 
 #[tokio::main]

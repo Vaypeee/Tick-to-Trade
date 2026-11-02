@@ -17,6 +17,7 @@ use tokio::sync::watch;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::capture::Payload;
+use super::metrics::{Stage, Timings};
 use super::session::Session;
 use crate::config::Config;
 
@@ -86,10 +87,11 @@ pub async fn run(
 ) -> Result<()> {
     let mut backoff = Backoff::new();
     let stats = session.stats();
+    let mut timings = Timings::new(&[Stage::Parse, Stage::Enqueue, Stage::FeedOffset]);
 
     while !*shutdown.borrow() {
         let started = Instant::now();
-        let outcome = stream_once(config, session, &mut shutdown).await;
+        let outcome = stream_once(config, session, &mut shutdown, &mut timings).await;
         let connected_for = started.elapsed();
 
         let reason = match outcome {
@@ -120,15 +122,43 @@ pub async fn run(
     }
 
     session.emit(Payload::control("stopped")).await?;
+    session.submit_timings(timings);
     Ok(())
 }
+
+/// Reads the exchange timestamp out of a frame, in milliseconds.
+///
+/// Only called on a sample of frames: finding it means parsing the frame a
+/// second time, and a measurement that slows down the thing it measures is
+/// worse than no measurement.
+fn exchange_timestamp_ms(body: &str) -> Option<u64> {
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    let event = match &parsed {
+        serde_json::Value::Array(events) => events.first()?,
+        other => other,
+    };
+    match event.get("timestamp")? {
+        serde_json::Value::String(text) => text.parse().ok(),
+        serde_json::Value::Number(number) => number.as_u64(),
+        _ => None,
+    }
+}
+
+/// One frame in every this many is measured against the exchange clock.
+///
+/// Finding the timestamp costs a second parse, so it is sampled rather than
+/// done on every frame; at a few microseconds a parse, one in four is well
+/// inside the noise of the stage it would otherwise distort.
+const OFFSET_SAMPLE: u64 = 4;
 
 /// One connection, from handshake to disconnect.
 async fn stream_once(
     config: &Config,
     session: &mut Session,
     shutdown: &mut watch::Receiver<bool>,
+    timings: &mut Timings,
 ) -> Result<Disconnect> {
+    let mut seen: u64 = 0;
     let url = &config.polymarket.ws_url;
     let (socket, _) = connect_async(url)
         .await
@@ -169,8 +199,29 @@ async fn stream_once(
                 };
                 match frame.context("websocket error")? {
                     Message::Text(text) => {
-                        let payload = Payload::from_frame(text.as_str().to_owned());
+                        let body = text.as_str().to_owned();
+
+                        seen += 1;
+                        if seen % OFFSET_SAMPLE == 0
+                            && let Some(sent_ms) = exchange_timestamp_ms(&body)
+                        {
+                            // Unsigned on purpose. A negative difference means
+                            // our clock reads earlier than theirs, which is as
+                            // much a fact about the clocks as a positive one;
+                            // clamping it to zero would hide that and leave a
+                            // flattering number in its place.
+                            let received_ms = stamp.unix_ns / 1_000_000;
+                            let apart_ms = received_ms.abs_diff(sent_ms);
+                            timings.record(Stage::FeedOffset, apart_ms * 1_000_000);
+                        }
+
+                        let parsing = Instant::now();
+                        let payload = Payload::from_frame(body);
+                        timings.record_duration(Stage::Parse, parsing.elapsed());
+
+                        let queueing = Instant::now();
                         session.emit_at(stamp, payload).await?;
+                        timings.record_duration(Stage::Enqueue, queueing.elapsed());
                     }
                     Message::Binary(bytes) => {
                         let payload = Payload::from_frame(

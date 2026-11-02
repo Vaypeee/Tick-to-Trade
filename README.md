@@ -1,10 +1,10 @@
 # Tick to trade
 
 > **Status: early development.** What exists is the measurement apparatus:
-> three recorders, a replay that rebuilds the order book, and an analysis that
-> compares the market against a feed, against a spectator, and against itself.
-> No live pipeline, no orders, and no result yet — every table below marked
-> *not measured* is a placeholder, not a claim.
+> three recorders, a replay that rebuilds the order book, an analysis that
+> compares the market against a feed, against a spectator and against itself,
+> and latency instrumentation of the recorder itself (§4). No live pipeline,
+> no orders, and no result on the hypotheses yet.
 
 A low-latency, event-driven inference pipeline in Rust, and the measurement
 apparatus built to find out whether it is worth writing. The question is
@@ -90,18 +90,40 @@ out not to matter.
 
 ## 4. Latency budget
 
-Timestamps are taken at each stage and aggregated into HDR histograms. Both
-columns stay empty until there are enough events across enough matches for the
-percentiles to mean anything.
+Measured, not estimated. Every stage of the recorder is timed into an HDR
+histogram and the percentiles are printed at the end of a run, so the figures
+below are reproducible by running it.
 
-| Stage | Baseline | Current |
+What is measured is the stretch this process is answerable for: a frame
+leaving the socket to the line reaching the operating system. The network
+before it and the disk after it are not ours to claim.
+
+| Stage | p50 | p99 |
 |---|---|---|
-| Feed → ingestion | — | — |
-| Parsing | — | — |
-| Inference | — | — |
-| Decision | — | — |
-| Order → CLOB ack | — | — |
-| **Total (p50 / p95)** | — | — |
+| Parse — validate the frame as JSON | 2.4 µs | 23.5 µs |
+| Enqueue — hand it to the writer | 3.0 µs | 16.5 µs |
+| Format — record to a line | 1.8 µs | 13.5 µs |
+| Write — line to the operating system | 0.1 µs | 2.9 µs |
+| **Total — socket to written** | **19.4 µs** | **120.5 µs** |
+
+*Sample: 48 frames over 90 s on a liquid market, no stalls, release build.*
+
+Each task keeps its own histograms and they are merged once at the end. A
+shared, locked histogram on the hot path would have measured the contention it
+introduced.
+
+The gap between the exchange timestamp on a frame and our receipt of it reads
+about 460 ms, consistently. That is **not** a network latency: it spans two
+machines, so it is the delay plus however far the two clocks disagree, and
+nothing here can separate them. Checked against HTTP `Date` headers, which
+only resolve to the second, the local clock sits somewhere inside half a
+second of true — consistent with the gap being mostly clock offset. It does
+not affect the measurements in §5, because recordings compared against each
+other are made on the same machine and share whatever offset there is; it
+would only matter against an external timestamp.
+
+The stages an actual trading path would add — inference, decision, order to
+acknowledgement — do not exist yet, and no figure is invented for them.
 
 ## 5. Results
 
@@ -435,11 +457,12 @@ Ordered so that the hypothesis is tested before the fast system is built.
 - [x] Continuation study: what following a surge pays, against reaction delay
 - [ ] Live terminal dashboard: feed state, latency histograms, captured edge
 - [ ] Order book state in the live pipeline, reusing the replay reconstruction
-- [ ] Latency instrumentation end to end (HDR histograms)
+- [x] Latency instrumentation of the recorder (HDR histograms) — fills §4
+- [ ] The same instrumentation along a live trading path, once one exists
 - [ ] First fair-value model, however crude
 - [ ] Decision layer with an explicit fee and spread model
 - [ ] Paper execution and simulated PnL
-- [ ] Feed and VPS region comparison
+- [ ] Feed comparison, measured; VPS regions only once latency is the binding constraint
 - [ ] Better fair-value model, measured against its latency cost
 
 ## Disclaimer
