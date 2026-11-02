@@ -1,0 +1,39 @@
+# Copy this file to config.toml and fill in your own values.
+# config.toml is git-ignored: never commit credentials.
+
+[sports_feed]
+# Websocket endpoint of the live sports data provider.
+url = "wss://example-provider.invalid/v1/stream"
+api_key = "YOUR_API_KEY_HERE"
+# Sports or competitions to subscribe to.
+subscriptions = ["tennis", "football"]
+
+[polymarket]
+# Public CLOB endpoints.
+ws_url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+rest_url = "https://clob.polymarket.com"
+# Required only in live mode. Leave empty for paper mode.
+api_key = ""
+api_secret = ""
+api_passphrase = ""
+
+[decision]
+# Minimum edge, in probability points, required before sending an order.
+# Must cover fees + half-spread + a safety margin.
+min_edge = 0.03
+# Hard cap on exposure per market, in USDC.
+max_position = 50.0
+# Abandon a signal older than this: a stale event is not an edge.
+max_signal_age_ms = 250
+
+[execution]
+# "paper" simulates fills and sends nothing. "live" sends real orders.
+mode = "paper"
+# Drop an order rather than chase the book beyond this many ticks.
+max_slippage_ticks = 2
+
+[metrics]
+# Where latency histograms and simulated PnL are written.
+output_dir = "data/metrics"
+# Log a percentile summary at this interval.
+summary_interval_secs = 60

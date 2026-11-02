@@ -1,0 +1,23 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Local configuration and credentials — never commit these
+config.toml
+*.key
+*.pem
+.env
+.env.*
+
+# Recorded data, logs and benchmark output
+/data/
+/recordings/
+/logs/
+*.log
+
+# Editor and OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

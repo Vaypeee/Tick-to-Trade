@@ -1,0 +1,19 @@
+[package]
+name = "tick-to-trade"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Low-latency event-driven inference pipeline for live sports prediction markets"
+license = "MIT"
+readme = "README.md"
+publish = false
+
+[dependencies]
+
+[profile.release]
+# Latency work: keep the optimiser aggressive and the panics cheap.
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = 1
