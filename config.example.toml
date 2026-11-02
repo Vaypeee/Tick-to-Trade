@@ -9,13 +9,30 @@ api_key = "YOUR_API_KEY_HERE"
 subscriptions = ["tennis", "football"]
 
 [polymarket]
-# Public CLOB endpoints.
+# Public CLOB endpoints. The market channel needs no credentials.
 ws_url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 rest_url = "https://clob.polymarket.com"
+# Outcome token ids to record. These are the `assets_ids` of the market
+# channel, not condition ids. Find them in `clobTokenIds` on the Gamma
+# markets API, for example:
+#   https://gamma-api.polymarket.com/markets?closed=false&limit=5
+asset_ids = []
+# The market channel expects a PING text frame on this interval.
+ping_interval_secs = 10
 # Required only in live mode. Leave empty for paper mode.
 api_key = ""
 api_secret = ""
 api_passphrase = ""
+
+[recording]
+# Where recordings and their metadata sidecars are written. Git-ignored.
+output_dir = "data/recordings"
+# Frames buffered between the socket and the writer. A full queue stalls the
+# read loop, which skews every later timestamp, so stalls are counted and
+# reported rather than hidden.
+queue_capacity = 65536
+# How often to log a progress line while recording.
+stats_interval_secs = 60
 
 [decision]
 # Minimum edge, in probability points, required before sending an order.

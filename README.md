@@ -1,8 +1,9 @@
 # Tick to trade
 
-> **Status: early development.** The infrastructure is being built. No latency
-> numbers or results have been measured yet — every table below marked
-> *not measured* is a placeholder, not a claim.
+> **Status: early development.** The market data recorder works and is in use.
+> Nothing downstream of it exists yet, and no latency numbers or results have
+> been measured — every table below marked *not measured* is a placeholder,
+> not a claim.
 
 A low-latency, event-driven inference pipeline in Rust, built to test one
 hypothesis: during live sports events, Polymarket prices lag behind real-world
@@ -112,21 +113,67 @@ A negative result is a result and will be published as one.
 ```bash
 cargo build --release
 cp config.example.toml config.toml
+```
+
+### Recording the market
+
+The recorder is the part that works today, and it is deliberately the first
+thing built: the hypothesis above is answerable from recordings alone, without
+a fast system. Recordings are also what makes every later benchmark
+reproducible, which a live feed can never be.
+
+The CLOB market channel is public, so no credentials are needed. Put the
+outcome token ids you want in `polymarket.asset_ids` — they are the
+`clobTokenIds` of a market on the [Gamma API](https://gamma-api.polymarket.com/markets?closed=false&limit=5) —
+and run:
+
+```bash
+cargo run --release --bin record -- --duration-secs 600
+```
+
+Each run writes `data/recordings/polymarket-<unix-secs>.jsonl` plus a
+`.meta.json` sidecar describing what was recorded and with which clocks. One
+JSON object per line:
+
+| Field | Meaning |
+|---|---|
+| `seq` | Dense counter; a gap means a lost record, not a quiet market |
+| `t_mono_ns` | Monotonic nanoseconds since start — use this for durations |
+| `t_unix_ns` | Wall clock at receipt — the only clock comparable across processes |
+| `kind` | `data` (a feed frame, stored verbatim), `text`, or `control` |
+
+Both clocks are kept because neither is enough alone: the monotonic one cannot
+jump when NTP steps the system clock, and the wall clock is the only one that
+lines a Polymarket recording up with a sports feed recorded separately.
+Connection lifecycle events are written as `control` records, so a gap in a
+recording is never mistaken for a quiet market. If the writer ever falls behind
+the socket, the run reports a non-zero `stalls` count: those recordings measure
+the recorder as much as the market.
+
+### Running the pipeline
+
+```bash
 cargo run --release -- --mode paper
 ```
 
-`--mode paper` is simulation only and sends no orders. `config.toml` holds
-credentials and is git-ignored; only `config.example.toml` is committed.
+`--mode paper` is simulation only and sends no orders; `--mode live` is
+refused, because no execution path has been written or tested yet. `config.toml`
+holds credentials and is git-ignored, as is `data/`; only
+`config.example.toml` is committed.
 
 ## 8. Roadmap
 
-- [ ] Ingestion: sports feed and CLOB websocket clients
+Ordered so that the hypothesis is tested before the fast system is built.
+
+- [x] Recorder for the Polymarket CLOB market channel
+- [ ] Recorder for a live sports feed, and a measurement of its own lag
+- [ ] Offline analysis: repricing window, edge against latency — fills §5
+- [ ] Replay mode over recordings, for reproducible benchmarks
 - [ ] Order book state and normalised event stream
 - [ ] Latency instrumentation end to end (HDR histograms)
 - [ ] First fair-value model, however crude
 - [ ] Decision layer with an explicit fee and spread model
 - [ ] Paper execution and simulated PnL
-- [ ] Replay mode on recorded matches, for reproducible benchmarks
 - [ ] Feed and VPS region comparison
 - [ ] Better fair-value model, measured against its latency cost
 

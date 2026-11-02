@@ -9,6 +9,16 @@ readme = "README.md"
 publish = false
 
 [dependencies]
+anyhow = "1.0.104"
+futures-util = { version = "0.3.34", default-features = false, features = ["std", "sink"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["raw_value"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "io-util", "fs"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
+toml = "1.1.8"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [profile.release]
 # Latency work: keep the optimiser aggressive and the panics cheap.
