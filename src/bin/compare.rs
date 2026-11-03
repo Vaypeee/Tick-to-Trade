@@ -18,7 +18,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use tick_to_trade::analysis::{
     align::{self, Signal},
-    change_frequency, observations,
+    change_frequency, observations, poll_interval_ns,
     replay::{self},
 };
 
@@ -113,7 +113,7 @@ struct Feed {
 
 fn load(path: &Path, paths: &[String]) -> Result<Feed> {
     let records = replay::read(path)?;
-    let found = observations(&records, paths, 200);
+    let found = observations(&records, paths, 200, poll_interval_ns(path));
 
     let mut changes: Vec<u64> = found.iter().map(|each| each.at_unix_ns).collect();
     changes.sort_unstable();

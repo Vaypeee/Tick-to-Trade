@@ -44,6 +44,19 @@ pub struct Session {
 pub struct Outcome {
     pub summary: Summary,
     pub timings: Timings,
+    /// Whether the recording is still on disk, with something in it.
+    ///
+    /// A process writing to a handle whose directory entry has been removed
+    /// keeps succeeding: every write returns, the flush returns, and the
+    /// summary is accurate about bytes that are going nowhere. The one way to
+    /// notice is to look for the file afterwards.
+    pub durable: bool,
+    pub path: PathBuf,
+}
+
+/// Whether a path names a file that exists and holds something.
+fn is_durable(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() > 0)
 }
 
 impl Session {
@@ -154,6 +167,7 @@ impl Session {
     /// propagated once the file is durable.
     pub async fn finish(self, outcome: Result<()>) -> Result<Outcome> {
         let Self {
+            path,
             tx,
             writer,
             stats,
@@ -169,9 +183,14 @@ impl Session {
             timings.merge(producer);
         }
         outcome?;
+        // Checked after the writer has flushed and synced, so a `true` here
+        // means the bytes reached a file that still has a name.
+        let durable = is_durable(&path);
         Ok(Outcome {
             summary: stats.snapshot(),
             timings,
+            durable,
+            path,
         })
     }
 }
@@ -214,6 +233,32 @@ mod tests {
     fn recordings_are_named_after_their_feed_and_start_second() {
         let path = recording_path(Path::new("data/recordings"), "sports", 1_700_000_000);
         assert!(path.ends_with("sports-1700000000.jsonl"));
+    }
+
+    #[test]
+    fn a_file_that_is_gone_or_empty_is_not_durable() {
+        let dir = std::env::temp_dir().join("tick-to-trade-durable-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let missing = dir.join("never-written.jsonl");
+        assert!(!is_durable(&missing));
+
+        let empty = dir.join("empty.jsonl");
+        std::fs::write(&empty, "").unwrap();
+        assert!(!is_durable(&empty));
+
+        let written = dir.join("written.jsonl");
+        std::fs::write(
+            &written, "{}
+",
+        )
+        .unwrap();
+        assert!(is_durable(&written));
+
+        // A directory is not a recording, however suggestive the name.
+        assert!(!is_durable(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -175,7 +175,16 @@ market.
 1 Hz during a live match, the response changed only every 10–20 seconds, with
 HTTP round-trip at a median 87 ms: the ceiling is the source cadence, not the
 transport. A feed with 10-second granularity cannot beat a market that
-reprices in seconds, however fast the system behind it is.
+reprices in seconds, however fast the system behind it is. A later run on the
+NBA scoreboard put the median gap at 9 s, on a different sport and a different
+day.
+
+**Polling faster buys exactly one interval, and no more.** The same endpoint
+recorded twice at once, at 250 ms and at 3 s: detection uncertainty came out
+at 0.28 s and 3.01 s, each about one poll interval, and the slower recording
+saw the shared change 2.37 s later than the faster one. That is the shape the
+comparison should have, and getting it wrong is how the harness proved itself
+— see below.
 
 **Most of what a feed shows is not an event.** Over 17 minutes of a live
 match, the same endpoint produced 23 changes and not one of them was a score:

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use tick_to_trade::{
     config::Config,
     recorder::{
@@ -151,6 +151,16 @@ async fn record(
         );
     }
     report_latency(&outcome.timings);
+    if !outcome.durable {
+        // Everything above is true and none of it survived. Saying "finished"
+        // and stopping there would leave the operator believing in a file
+        // that is not on disk.
+        tracing::error!(
+            path = %outcome.path.display(),
+            "the recording is not on disk: it was removed or emptied while it was being written, and everything reported above went nowhere"
+        );
+        bail!("the recording did not survive the run");
+    }
     if summary.lines == 0 {
         let hint = match feed {
             Feed::Polymarket => "check `polymarket.asset_ids`",

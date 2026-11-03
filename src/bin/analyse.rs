@@ -10,7 +10,8 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use tick_to_trade::analysis::{
     align::{self, Leads, Matching},
-    book, change_frequency, edge, flow, observations, overlap_ns, presses, reference_asset,
+    book, change_frequency, edge, flow, observations, overlap_ns, poll_interval_ns, presses,
+    reference_asset,
     replay::{self, Record},
     span_ns,
 };
@@ -525,8 +526,9 @@ fn analyse_pair(pair: &Pair, args: &Args) -> Result<Contribution> {
     let mut contribution = Contribution::default();
 
     match (pair.against.as_ref(), other) {
-        (Some(Against::Sports(_)), Some(other)) => {
-            let found = observations(&other, &args.paths, 200);
+        (Some(Against::Sports(path)), Some(other)) => {
+            let feed_interval = poll_interval_ns(path);
+            let found = observations(&other, &args.paths, 200, feed_interval);
             println!("   {} feed change(s)", found.len());
             if args.paths.is_empty() {
                 println!("   busiest paths (use --path to keep only the ones that are events):");

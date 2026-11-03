@@ -37,6 +37,7 @@ pub fn observations(
     records: &[Record],
     needles: &[String],
     max_changes: usize,
+    poll_interval_ns: Option<u64>,
 ) -> Vec<Observation> {
     let polls: Vec<&Record> = records
         .iter()
@@ -57,7 +58,29 @@ pub fn observations(
                 return None;
             }
 
-            let (from, at) = current.observed_window_ns();
+            let (requested, at) = current.observed_window_ns();
+
+            // The change happened after the last poll that still showed the
+            // old state. Which poll that was depends on what sat in between:
+            //
+            // - with no unchanged poll between the two stored responses, the
+            //   previous stored response is the last confirmation;
+            // - with unchanged polls in between, each confirmed the old state
+            //   again, and the last of them landed about one interval before
+            //   the request that finally found the change.
+            //
+            // Using the previous stored response in the second case would
+            // hand a 250 ms poller ten seconds of uncertainty it does not
+            // have; using the request in the first would hide however long
+            // the feed went unobserved. Both facts are available, so take
+            // whichever is later and claim nothing the data does not support.
+            let confirmed_until = match (current.unchanged_polls, poll_interval_ns) {
+                (Some(unchanged), Some(interval)) if unchanged > 0 => {
+                    requested.saturating_sub(interval)
+                }
+                _ => previous.t_unix_ns,
+            };
+            let from = confirmed_until.max(previous.t_unix_ns).min(at);
             Some(Observation {
                 from_unix_ns: from,
                 at_unix_ns: at,
@@ -144,6 +167,20 @@ pub fn reference_asset(recording: &std::path::Path) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The poll interval a sports recording was made with, from its sidecar.
+///
+/// Needed to bound detection uncertainty honestly: how long a feed went
+/// unobserved is a property of the run, not of any single record in it.
+pub fn poll_interval_ns(recording: &std::path::Path) -> Option<u64> {
+    let sidecar = recording.with_extension("meta.json");
+    let raw = std::fs::read_to_string(sidecar).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    parsed
+        .get("poll_interval_ms")?
+        .as_u64()
+        .map(|ms| ms.saturating_mul(1_000_000))
+}
+
 /// Wall-clock span covered by a recording, in nanoseconds.
 pub fn span_ns(records: &[Record]) -> Option<(u64, u64)> {
     let first = records.first()?.t_unix_ns;
@@ -185,16 +222,49 @@ mod tests {
             poll(1, 10, 20, json!({"score": 0, "noise": "a"})),
             poll(2, 100, 120, json!({"score": 1, "noise": "a"})),
         ];
-        let found = observations(&records, &[], 50);
+        let found = observations(&records, &[], 50, None);
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].from_unix_ns, 100);
+        // Nothing polled in between, so the previous response is the last
+        // time the old score was confirmed.
+        assert_eq!(found[0].from_unix_ns, 20);
         assert_eq!(found[0].at_unix_ns, 120);
         assert_eq!(found[0].label, "/score");
     }
 
     #[test]
+    fn a_quiet_stretch_with_no_polling_is_all_uncertainty() {
+        // Three seconds between stored responses and nothing polled in
+        // between: the change could have happened at any point in them.
+        let records = vec![
+            poll(1, 0, 1_000, json!({"score": 0})),
+            poll(2, 3_000_000_000, 3_000_100_000, json!({"score": 1})),
+        ];
+        let found = observations(&records, &[], 50, None);
+        let width = found[0].at_unix_ns - found[0].from_unix_ns;
+        assert!(width > 2_900_000_000, "window was only {width} ns");
+    }
+
+    #[test]
+    fn polls_that_saw_the_old_state_narrow_the_window() {
+        // The same three seconds, but polled through at 250 ms. Every one of
+        // those polls confirmed the old score, so the change can only have
+        // happened in the last interval.
+        let mut later = poll(2, 3_000_000_000, 3_000_100_000, json!({"score": 1}));
+        later.unchanged_polls = Some(11);
+        let records = vec![poll(1, 0, 1_000, json!({"score": 0})), later];
+
+        let found = observations(&records, &[], 50, Some(250_000_000));
+        let width = found[0].at_unix_ns - found[0].from_unix_ns;
+        assert!(width < 400_000_000, "window was {width} ns");
+
+        // Without knowing the interval, the honest answer is the wide one.
+        let blind = observations(&records, &[], 50, None);
+        assert!(blind[0].at_unix_ns - blind[0].from_unix_ns > 2_900_000_000);
+    }
+
+    #[test]
     fn a_single_response_yields_nothing_to_compare() {
-        assert!(observations(&[poll(1, 1, 2, json!({"a": 1}))], &[], 50).is_empty());
+        assert!(observations(&[poll(1, 1, 2, json!({"a": 1}))], &[], 50, None).is_empty());
     }
 
     #[test]
@@ -203,8 +273,8 @@ mod tests {
             poll(1, 10, 20, json!({"score": 0, "ads": 1})),
             poll(2, 30, 40, json!({"score": 0, "ads": 2})),
         ];
-        assert!(observations(&records, &["score".to_string()], 50).is_empty());
-        assert_eq!(observations(&records, &[], 50).len(), 1);
+        assert!(observations(&records, &["score".to_string()], 50, None).is_empty());
+        assert_eq!(observations(&records, &[], 50, None).len(), 1);
     }
 
     #[test]
@@ -214,7 +284,7 @@ mod tests {
             poll(2, 3, 4, json!({"a": 1, "b": 1, "c": 1, "d": 1})),
         ];
         assert_eq!(
-            observations(&records, &[], 50)[0].label,
+            observations(&records, &[], 50, None)[0].label,
             "/a, /b, /c, +1 more"
         );
     }
