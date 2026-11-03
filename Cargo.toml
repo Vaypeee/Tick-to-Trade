@@ -2,7 +2,9 @@
 name = "tick-to-trade"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# Verified by CI rather than asserted: the code uses let-chains, which need
+# 1.88, and an unchecked `rust-version` is a number somebody typed once.
+rust-version = "1.88"
 description = "Low-latency event-driven inference pipeline for live sports prediction markets"
 license = "MIT"
 readme = "README.md"

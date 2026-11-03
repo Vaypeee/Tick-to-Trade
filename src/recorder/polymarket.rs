@@ -202,7 +202,7 @@ async fn stream_once(
                         let body = text.as_str().to_owned();
 
                         seen += 1;
-                        if seen % OFFSET_SAMPLE == 0
+                        if seen.is_multiple_of(OFFSET_SAMPLE)
                             && let Some(sent_ms) = exchange_timestamp_ms(&body)
                         {
                             // Unsigned on purpose. A negative difference means

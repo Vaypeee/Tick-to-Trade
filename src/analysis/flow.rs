@@ -100,7 +100,7 @@ pub fn trades(records: &[Record], quotes: &[Quote]) -> (Vec<Trade>, SideAgreemen
             };
 
             let taker = match touch_at(quotes, asset, record.t_unix_ns) {
-                Some((bid, ask)) if super::ticks(price) >= super::ticks(ask) => Taker::Buy,
+                Some((_, ask)) if super::ticks(price) >= super::ticks(ask) => Taker::Buy,
                 Some((bid, _)) if super::ticks(price) <= super::ticks(bid) => Taker::Sell,
                 _ => Taker::Unclear,
             };

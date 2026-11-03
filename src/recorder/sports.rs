@@ -155,7 +155,7 @@ fn is_new(previous: Option<&(u16, String)>, status: u16, body: &str) -> bool {
 }
 
 fn should_heartbeat(unchanged: u64, every: u64) -> bool {
-    every > 0 && unchanged % every == 0
+    every > 0 && unchanged.is_multiple_of(every)
 }
 
 #[cfg(test)]

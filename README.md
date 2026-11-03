@@ -1,5 +1,7 @@
 # Tick to trade
 
+[![CI](https://github.com/Vaypeee/tick-to-trade/actions/workflows/ci.yml/badge.svg)](https://github.com/Vaypeee/tick-to-trade/actions/workflows/ci.yml)
+
 > **Status: early development.** What exists is the measurement apparatus:
 > three recorders, a replay that rebuilds the order book, an analysis that
 > compares the market against a feed, against a spectator and against itself,
@@ -529,7 +531,26 @@ cargo run --release --bin analyse -- \
 Each recording is reported on its own first, then pooled. The tool still says
 when there are too few matched presses to read anything into the percentiles.
 
-## 9. Roadmap
+## 9. Checks
+
+```bash
+cargo fmt --all --check
+cargo clippy --all-targets -- -D warnings
+cargo test --all-targets
+```
+
+CI runs all three on every push, with warnings promoted to errors: a lint that
+only fails on one machine is a lint nobody fixes. Nothing in the test suite
+touches the network — every test runs against fixtures or hand-built inputs —
+which is what makes them worth running on a machine that has never seen a live
+market.
+
+A second job builds against the `rust-version` in `Cargo.toml`, reading the
+number out of the manifest rather than repeating it. That field was wrong
+until CI was written: it claimed 1.85 while the code uses let-chains, which
+need 1.88. An unchecked minimum version is a number somebody typed once.
+
+## 10. Roadmap
 
 Ordered so that the hypothesis is tested before the fast system is built.
 
