@@ -455,20 +455,34 @@ Prices are drawn as a staircase: a quote holds until the next replaces it, so
 joining two with a sloped line would draw prices the book never showed —
 tidier, and wrong.
 
-### Running the pipeline
+### Checking the setup
 
 ```bash
-cargo run --release -- --mode paper
+cargo run --release
 ```
 
-`--mode paper` is simulation only and sends no orders; `--mode live` is
-refused, because no execution path has been written or tested yet. `config.toml`
-holds credentials and is git-ignored, as is `data/`; only
+The command named after the crate does not run a pipeline, because there is
+no pipeline: until the measurements justify building one, there should not be.
+It checks the configuration instead and says what is ready — how many outcomes
+are subscribed, whether the labelling page has keys bound, what rules the
+decision layer would apply, how many recordings are already on disk — and
+exits non-zero if something would stop a recording.
+
+That is worth a command of its own because a mistake in the configuration
+only shows up as an empty recording, and the match is over by then.
+
+`config.toml` holds credentials and is git-ignored, as is `data/`; only
 `config.example.toml` is committed.
 
 ## 8. Run book for a live match
 
 What to do, in order, while a game is on.
+
+**0. Check the setup.**
+
+```bash
+cargo run --release
+```
 
 **1. Find the market and its outcome token ids.**
 

@@ -1,94 +1,182 @@
-//! Entry point for the tick-to-trade pipeline.
+//! Checks the configuration and says what is ready to run.
 //!
-//! The pipeline itself is not implemented yet: this binary only resolves the
-//! run mode and the configuration file, so that the repository builds and the
-//! command-line contract documented in the README is fixed early.
+//! The pipeline this crate is named after does not exist yet, and until the
+//! measurements justify building it, it should not. What does exist is a set
+//! of tools that each need the configuration to be right, and a mistake in it
+//! only shows up as an empty recording afterwards — which is the worst time
+//! to find out, because the match is over.
+//!
+//! So the default command is a pre-flight: load the configuration, say what
+//! it will and will not let you do, and fail loudly if something would stop a
+//! recording before it starts.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const CONFIG_PATH: &str = "config.toml";
-const USAGE: &str = "\
-usage: tick-to-trade --mode <paper|live>
+use anyhow::Result;
+use tick_to_trade::config::Config;
 
-    --mode paper    simulate fills locally, send no orders (default)
-    --mode live     send real orders to the CLOB
-    -h, --help      print this message
+const DEFAULT_CONFIG: &str = "config.toml";
+const USAGE: &str = "\
+usage: tick-to-trade [--config <path>]
+
+    --config <path>    configuration to check (default: config.toml)
+    -h, --help         print this message
+
+Checks the configuration and reports what is ready. Exits non-zero if
+something would stop a recording.
+
+The tools this project ships:
+
+    markets      find a live market and its outcome token ids
+    record       capture a feed to disk, timestamped
+    analyse      compare recordings: market against feed, spectator, itself
+    paper        replay the trading rules over a recording
+    dashboard    draw a recording as an HTML timeline
 ";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    /// Simulate fills locally. Sends nothing to the exchange.
-    Paper,
-    /// Send real orders. Requires credentials in the configuration file.
-    Live,
-}
-
-impl Mode {
-    fn parse(raw: &str) -> Result<Self, String> {
-        match raw {
-            "paper" => Ok(Self::Paper),
-            "live" => Ok(Self::Live),
-            other => Err(format!(
-                "unknown mode `{other}`, expected `paper` or `live`"
-            )),
-        }
-    }
-}
-
-fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Mode>, String> {
-    let mut mode = Mode::Paper;
-    let mut args = args.peekable();
+fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<PathBuf>, String> {
+    let mut config = PathBuf::from(DEFAULT_CONFIG);
+    let mut args = args;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Ok(None),
-            "--mode" => {
-                let raw = args.next().ok_or("`--mode` expects a value")?;
-                mode = Mode::parse(&raw)?;
+            "--config" => {
+                config = args.next().ok_or("`--config` expects a path")?.into();
             }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
-
-    Ok(Some(mode))
+    Ok(Some(config))
 }
 
-fn run(mode: Mode) -> Result<(), String> {
-    if !Path::new(CONFIG_PATH).exists() {
-        return Err(format!(
-            "`{CONFIG_PATH}` not found — copy `config.example.toml` to `{CONFIG_PATH}` and fill it in"
-        ));
+fn count_recordings(dir: &Path) -> Option<(usize, usize, usize)> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut market = 0;
+    let mut sports = 0;
+    let mut labels = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".jsonl") {
+            continue;
+        }
+        if name.starts_with("polymarket-") {
+            market += 1;
+        } else if name.starts_with("sports-") {
+            sports += 1;
+        } else if name.starts_with("labels-") {
+            labels += 1;
+        }
+    }
+    Some((market, sports, labels))
+}
+
+fn check(path: &Path) -> Result<bool> {
+    println!("configuration: {}", path.display());
+    let config = Config::load(path)?;
+
+    let outcomes = config.polymarket.asset_ids.len();
+    let ready_to_record = config.validate_for_recording().is_ok();
+    println!("\nmarket");
+    println!("  {}", config.polymarket.ws_url);
+    match outcomes {
+        0 => println!("  no outcomes subscribed — `markets` prints the ids to paste"),
+        1 => println!(
+            "  1 outcome subscribed; list the other one too, or half the deltas\n  \
+             arrive with no book to apply them to"
+        ),
+        n => println!("  {n} outcomes subscribed, first is the reference for label directions"),
     }
 
-    // Guard the dangerous path before any of it exists, rather than after.
-    if mode == Mode::Live {
-        return Err(
-            "live mode is not implemented: no execution path has been written or tested yet".into(),
+    match &config.labels {
+        Some(labels) => {
+            println!("\nspectator baseline");
+            println!("  http://{}/", labels.bind);
+            println!("  {} button(s)", labels.buttons.len());
+            let without_key = labels
+                .buttons
+                .iter()
+                .filter(|button| button.key.is_empty())
+                .count();
+            if without_key > 0 {
+                println!(
+                    "  {without_key} with no key: reachable only by mouse, which costs a\n  \
+                     few hundred milliseconds of the thing being measured"
+                );
+            }
+        }
+        None => println!("\nspectator baseline\n  not configured"),
+    }
+
+    match &config.sports_feed {
+        Some(feed) => {
+            println!("\nsports feed");
+            println!("  {} every {} ms", feed.url, feed.poll_interval_ms);
+        }
+        None => println!("\nsports feed\n  not configured (the first hypothesis is on hold)"),
+    }
+
+    println!("\nrules");
+    println!(
+        "  size {:.0}, max position {:.0}, min edge {:.3} beyond the round trip cost",
+        config.decision.size, config.decision.max_position, config.decision.min_edge
+    );
+    println!(
+        "  refuse a spread over {:.3}, signals stale after {} ms, {:.1} bps per leg",
+        config.decision.max_spread, config.decision.max_signal_age_ms, config.execution.fee_bps
+    );
+    if config.execution.mode != "paper" {
+        println!(
+            "  execution.mode is `{}` — only `paper` exists, and it sends nothing",
+            config.execution.mode
         );
     }
 
-    println!("tick-to-trade: {mode:?} mode, config `{CONFIG_PATH}`");
-    println!("no pipeline stage is implemented yet — see the roadmap in README.md");
-    Ok(())
+    let dir = &config.recording.output_dir;
+    println!("\nrecordings in {}", dir.display());
+    match count_recordings(dir) {
+        Some((market, sports, labels)) => {
+            println!("  {market} market, {sports} sports, {labels} labels")
+        }
+        None => println!("  none yet; the directory is created on the first run"),
+    }
+
+    println!();
+    if ready_to_record {
+        println!("Ready. Record both feeds at once, one process each:");
+        println!("  record --feed polymarket &");
+        if config.labels.is_some() {
+            println!("  record --feed labels &");
+        }
+    } else {
+        println!("Not ready to record: `polymarket.asset_ids` is empty.");
+        println!("  markets --search \"league of legends\"");
+    }
+    Ok(ready_to_record)
 }
 
 fn main() -> ExitCode {
-    match parse_args(std::env::args().skip(1)) {
+    let path = match parse_args(std::env::args().skip(1)) {
         Ok(None) => {
             print!("{USAGE}");
-            ExitCode::SUCCESS
+            return ExitCode::SUCCESS;
         }
-        Ok(Some(mode)) => match run(mode) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(err) => {
-                eprintln!("error: {err}");
-                ExitCode::FAILURE
-            }
-        },
-        Err(err) => {
-            eprintln!("error: {err}\n");
+        Ok(Some(path)) => path,
+        Err(error) => {
+            eprintln!("error: {error}\n");
             eprint!("{USAGE}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match check(&path) {
+        Ok(true) => ExitCode::SUCCESS,
+        // A configuration that cannot record is not a crash, but it is not a
+        // success either: a script that chains this should stop here.
+        Ok(false) => ExitCode::FAILURE,
+        Err(error) => {
+            eprintln!("error: {error:#}");
             ExitCode::FAILURE
         }
     }
@@ -98,7 +186,7 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
 
-    fn args(values: &[&str]) -> impl Iterator<Item = String> {
+    fn args(values: &[&str]) -> std::vec::IntoIter<String> {
         values
             .iter()
             .map(|value| value.to_string())
@@ -107,31 +195,52 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_paper_mode() {
-        assert_eq!(parse_args(args(&[])).unwrap(), Some(Mode::Paper));
-    }
-
-    #[test]
-    fn parses_explicit_modes() {
+    fn the_default_configuration_is_config_toml() {
         assert_eq!(
-            parse_args(args(&["--mode", "live"])).unwrap(),
-            Some(Mode::Live)
-        );
-        assert_eq!(
-            parse_args(args(&["--mode", "paper"])).unwrap(),
-            Some(Mode::Paper)
+            parse_args(args(&[])).unwrap(),
+            Some(PathBuf::from("config.toml"))
         );
     }
 
     #[test]
-    fn help_requests_no_mode() {
-        assert_eq!(parse_args(args(&["--help"])).unwrap(), None);
+    fn another_configuration_can_be_checked() {
+        assert_eq!(
+            parse_args(args(&["--config", "other.toml"])).unwrap(),
+            Some(PathBuf::from("other.toml"))
+        );
     }
 
     #[test]
-    fn rejects_unknown_mode_and_missing_value() {
-        assert!(parse_args(args(&["--mode", "yolo"])).is_err());
-        assert!(parse_args(args(&["--mode"])).is_err());
-        assert!(parse_args(args(&["--verbose"])).is_err());
+    fn help_checks_nothing() {
+        assert!(parse_args(args(&["--help"])).unwrap().is_none());
+    }
+
+    #[test]
+    fn unknown_arguments_are_refused() {
+        assert!(parse_args(args(&["--mode", "paper"])).is_err());
+        assert!(parse_args(args(&["--config"])).is_err());
+    }
+
+    #[test]
+    fn counting_a_directory_that_is_not_there_is_not_an_error() {
+        assert!(count_recordings(Path::new("no/such/directory")).is_none());
+    }
+
+    #[test]
+    fn recordings_are_counted_by_the_feed_that_wrote_them() {
+        let dir = std::env::temp_dir().join("tick-to-trade-main-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "polymarket-1.jsonl",
+            "polymarket-2.jsonl",
+            "labels-1.jsonl",
+            "polymarket-1.meta.json",
+            "notes.txt",
+        ] {
+            std::fs::write(dir.join(name), "").unwrap();
+        }
+        assert_eq!(count_recordings(&dir), Some((2, 0, 1)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
