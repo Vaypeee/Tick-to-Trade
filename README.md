@@ -489,6 +489,35 @@ Prices are drawn as a staircase: a quote holds until the next replaces it, so
 joining two with a sloped line would draw prices the book never showed —
 tidier, and wrong.
 
+### Comparing candidate feeds
+
+Vendors publish latency figures that are not comparable with each other and
+that none of them measures the same way, so the choice of feed is made by
+measurement. Configure the candidates under `[[sports_feeds]]`, record them
+side by side through one match, and compare:
+
+```bash
+cargo run --release --bin record -- --feed sports --source espn &
+cargo run --release --bin record -- --feed sports --source vendor &
+```
+
+```bash
+cargo run --release --bin compare -- \
+  --feed data/recordings/sports-espn-<timestamp>.jsonl \
+  --feed data/recordings/sports-vendor-<timestamp>.jsonl \
+  --path score
+```
+
+It reports each feed on its own — how often it says anything, and how wide the
+window each change was caught in — then measures the others against the first:
+how often each showed a change earlier, and by how much.
+
+The comparison understands neither document. It asks only when each feed
+changed and how those instants line up, which is what makes it usable on a
+feed whose schema nobody has read. That is also its weakness, so the report
+says so: two feeds changing close together may be changing for unrelated
+reasons. Narrow it with `--path`, chosen from the busiest paths it prints.
+
 ### Checking the setup
 
 ```bash
@@ -604,7 +633,8 @@ Ordered so that the hypothesis is tested before the fast system is built.
 
 - [x] Recorder for the Polymarket CLOB market channel
 - [x] Recorder for a sports feed, provider-agnostic, measuring its own lag
-- [ ] A sports feed fast enough to be worth trading on, found by measurement
+- [x] A harness to rank candidate feeds by what they showed first
+- [ ] A sports feed fast enough to be worth trading on, found with it
 - [x] Offline analysis: replay, book reconstruction, lag measurement
 - [ ] H1 end to end, once a feed fast enough to test it exists
 - [x] Spectator baseline: hand-stamped from the public broadcast
@@ -621,7 +651,7 @@ Ordered so that the hypothesis is tested before the fast system is built.
 - [ ] First fair-value model, however crude
 - [x] Decision layer with an explicit fee and spread model
 - [x] Paper execution and simulated PnL over a recording
-- [ ] Feed comparison, measured; VPS regions only once latency is the binding constraint
+- [ ] VPS regions, only once latency is the binding constraint
 - [ ] Better fair-value model, measured against its latency cost
 
 ## Disclaimer

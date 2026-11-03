@@ -113,7 +113,12 @@ impl Feed {
 }
 
 /// Records `feed` until `shutdown` flips to `true`, then drains and flushes.
-pub async fn run(feed: Feed, config: &Config, shutdown: watch::Receiver<bool>) -> Result<Outcome> {
+pub async fn run(
+    feed: Feed,
+    source: Option<&str>,
+    config: &Config,
+    shutdown: watch::Receiver<bool>,
+) -> Result<Outcome> {
     if feed == Feed::Polymarket {
         config.validate_for_recording()?;
     }
@@ -127,13 +132,26 @@ pub async fn run(feed: Feed, config: &Config, shutdown: watch::Receiver<bool>) -
         _ => None,
     };
 
+    // Resolved before the recording opens, so naming a feed that is not
+    // configured fails without leaving a file behind.
+    let sports = match feed {
+        Feed::Sports => Some(sports::feed(config, source)?),
+        _ => None,
+    };
+
     let metadata = match feed {
         Feed::Polymarket => polymarket::metadata(config),
-        Feed::Sports => sports::metadata(config)?,
+        Feed::Sports => sports::metadata(sports.expect("resolved above"))?,
         Feed::Labels => labels::metadata(config)?,
     };
+    // A sports recording carries the feed name, so two candidates recorded
+    // over the same window land in files that can be told apart.
+    let name = match sports {
+        Some(feed) => format!("sports-{}", feed.name),
+        None => feed.name().to_string(),
+    };
     let mut session = Session::open(
-        feed.name(),
+        &name,
         &config.recording.output_dir,
         config.recording.queue_capacity,
         metadata,
@@ -149,7 +167,9 @@ pub async fn run(feed: Feed, config: &Config, shutdown: watch::Receiver<bool>) -
 
     let outcome = match (feed, listener) {
         (Feed::Polymarket, _) => polymarket::run(config, &mut session, shutdown).await,
-        (Feed::Sports, _) => sports::run(config, &mut session, shutdown).await,
+        (Feed::Sports, _) => {
+            sports::run(sports.expect("resolved above"), &mut session, shutdown).await
+        }
         (Feed::Labels, Some(listener)) => {
             labels::run(config, listener, &mut session, shutdown).await
         }

@@ -24,6 +24,7 @@ usage: record [--feed <polymarket|sports|labels>] [--config <path>]
               [--duration-secs <n>]
 
     --feed <name>          polymarket (default), sports or labels
+    --source <name>        which sports feed, when several are configured
     --config <path>        configuration file (default: config.toml)
     --duration-secs <n>    stop after n seconds (default: run until Ctrl-C)
     -h, --help             print this message
@@ -43,6 +44,7 @@ Record together, one process each, so the recordings can be aligned:
 #[derive(Debug, PartialEq, Eq)]
 struct Args {
     feed: Feed,
+    source: Option<String>,
     config: PathBuf,
     duration: Option<Duration>,
 }
@@ -51,6 +53,7 @@ impl Default for Args {
     fn default() -> Self {
         Self {
             feed: Feed::Polymarket,
+            source: None,
             config: PathBuf::from(DEFAULT_CONFIG),
             duration: None,
         }
@@ -67,6 +70,9 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Args>, String
             "--feed" => {
                 let value = args.next().ok_or("`--feed` expects a name")?;
                 parsed.feed = Feed::parse(&value)?;
+            }
+            "--source" => {
+                parsed.source = Some(args.next().ok_or("`--source` expects a name")?);
             }
             "--config" => {
                 let value = args.next().ok_or("`--config` expects a path")?;
@@ -115,12 +121,17 @@ async fn watch_for_stop(tx: watch::Sender<bool>, duration: Option<Duration>) {
     let _ = tx.send(true);
 }
 
-async fn record(feed: Feed, config_path: &Path, duration: Option<Duration>) -> Result<()> {
+async fn record(
+    feed: Feed,
+    source: Option<&str>,
+    config_path: &Path,
+    duration: Option<Duration>,
+) -> Result<()> {
     let config = Config::load(config_path)?;
     let (tx, rx) = watch::channel(false);
     tokio::spawn(watch_for_stop(tx, duration));
 
-    let outcome = recorder::run(feed, &config, rx)
+    let outcome = recorder::run(feed, source, &config, rx)
         .await
         .context("recording failed")?;
     let summary = outcome.summary;
@@ -143,7 +154,7 @@ async fn record(feed: Feed, config_path: &Path, duration: Option<Duration>) -> R
     if summary.lines == 0 {
         let hint = match feed {
             Feed::Polymarket => "check `polymarket.asset_ids`",
-            Feed::Sports => "check `sports_feed.url`",
+            Feed::Sports => "check the feed url",
             Feed::Labels => "nothing was pressed on the label page",
         };
         tracing::warn!("nothing was recorded — {hint}");
@@ -204,7 +215,14 @@ async fn main() -> ExitCode {
         }
     };
 
-    match record(args.feed, &args.config, args.duration).await {
+    match record(
+        args.feed,
+        args.source.as_deref(),
+        &args.config,
+        args.duration,
+    )
+    .await
+    {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error:#}");

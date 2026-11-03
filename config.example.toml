@@ -1,14 +1,16 @@
 # Copy this file to config.toml and fill in your own values.
 # config.toml is git-ignored: never commit credentials.
 
-[sports_feed]
-# HTTP endpoint polled for live state. No provider is assumed: point this at
-# whichever feed you are evaluating and let the recording measure its lag.
+# Candidate sports feeds. Several can be listed and recorded side by side,
+# because which one to trust is a measurement rather than a choice made from
+# vendor claims — `compare` ranks them by what they actually showed first.
 #
-# The example below is a free scoreboard endpoint, useful for checking the
-# plumbing. Measure its update cadence before trusting it: a source that only
-# changes every ten seconds cannot beat a market that reprices in seconds, no
-# matter how fast you poll it.
+# The name goes into the recording filename, so two candidates recorded over
+# the same window stay apart. Record one per process:
+#   record --feed sports --source espn &
+#   record --feed sports --source vendor &
+[[sports_feeds]]
+name = "espn"
 url = "https://site.api.espn.com/apis/site/v2/sports/soccer/ita.1/scoreboard"
 # How often to poll. Faster than the source updates buys nothing and risks
 # being rate limited; minimum 100 ms.
@@ -18,9 +20,13 @@ timeout_ms = 5000
 # is never mistaken for a dead one. Zero disables it.
 heartbeat_polls = 60
 
-# Sent with every request. This is where a paid feed authenticates. Values are
-# credentials: they are never written to the recording metadata.
-# [sports_feed.headers]
+# A second candidate, for comparison. Sent headers are where a paid feed
+# authenticates; their values are credentials and never reach the metadata.
+# [[sports_feeds]]
+# name = "vendor"
+# url = "https://example-provider.invalid/v1/live"
+# poll_interval_ms = 500
+# [sports_feeds.headers]
 # "x-api-key" = "YOUR_API_KEY_HERE"
 
 [polymarket]

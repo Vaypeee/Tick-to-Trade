@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use tokio::sync::watch;
 use tokio::time::MissedTickBehavior;
@@ -27,9 +27,9 @@ use crate::config::{Config, SportsFeed};
 /// Header *names* are recorded, never their values: a paid feed authenticates
 /// with a header, and a metadata file sitting next to a recording is exactly
 /// the kind of file that gets shared.
-pub fn metadata(config: &Config) -> Result<Value> {
-    let feed = feed(config)?;
+pub fn metadata(feed: &SportsFeed) -> Result<Value> {
     Ok(serde_json::json!({
+        "name": feed.name,
         "url": feed.url,
         "poll_interval_ms": feed.poll_interval_ms,
         "timeout_ms": feed.timeout_ms,
@@ -38,11 +38,36 @@ pub fn metadata(config: &Config) -> Result<Value> {
     }))
 }
 
-fn feed(config: &Config) -> Result<&SportsFeed> {
-    config
-        .sports_feed
-        .as_ref()
-        .context("`[sports_feed]` is missing from the configuration")
+/// Picks the feed to record.
+///
+/// With one configured it is unambiguous. With several, naming one is
+/// required: silently recording the first would make a comparison of feeds
+/// depend on the order they happen to sit in the file.
+pub fn feed<'a>(config: &'a Config, source: Option<&str>) -> Result<&'a SportsFeed> {
+    let feeds = &config.sports_feeds;
+    if feeds.is_empty() {
+        bail!("no `[[sports_feeds]]` in the configuration");
+    }
+    match source {
+        Some(name) => feeds
+            .iter()
+            .find(|feed| feed.name == name)
+            .with_context(|| {
+                let known: Vec<&str> = feeds.iter().map(|feed| feed.name.as_str()).collect();
+                format!(
+                    "no sports feed named `{name}`; configured: {}",
+                    known.join(", ")
+                )
+            }),
+        None if feeds.len() == 1 => Ok(&feeds[0]),
+        None => {
+            let known: Vec<&str> = feeds.iter().map(|feed| feed.name.as_str()).collect();
+            bail!(
+                "several sports feeds are configured, so one must be named with                  `--source`: {}",
+                known.join(", ")
+            )
+        }
+    }
 }
 
 /// Polls until `shutdown` flips to `true`.
@@ -52,11 +77,10 @@ fn feed(config: &Config) -> Result<&SportsFeed> {
 /// extra information, and the information that matters — when the feed first
 /// showed the new state — is preserved exactly.
 pub async fn run(
-    config: &Config,
+    feed: &SportsFeed,
     session: &mut Session,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
-    let feed = feed(config)?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(feed.timeout_ms))
         .user_agent(concat!("tick-to-trade/", env!("CARGO_PKG_VERSION")))

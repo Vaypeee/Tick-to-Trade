@@ -110,12 +110,26 @@ fn check(path: &Path) -> Result<bool> {
         None => println!("\nspectator baseline\n  not configured"),
     }
 
-    match &config.sports_feed {
-        Some(feed) => {
-            println!("\nsports feed");
-            println!("  {} every {} ms", feed.url, feed.poll_interval_ms);
+    if config.sports_feeds.is_empty() {
+        println!(
+            "
+sports feeds
+  none configured (the first hypothesis is on hold)"
+        );
+    } else {
+        println!(
+            "
+sports feeds"
+        );
+        for feed in &config.sports_feeds {
+            println!(
+                "  {:<12} every {} ms   {}",
+                feed.name, feed.poll_interval_ms, feed.url
+            );
         }
-        None => println!("\nsports feed\n  not configured (the first hypothesis is on hold)"),
+        if config.sports_feeds.len() > 1 {
+            println!("  record them side by side, one process each, with --source <name>");
+        }
     }
 
     println!("\nrules");

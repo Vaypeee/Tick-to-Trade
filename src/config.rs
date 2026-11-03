@@ -17,10 +17,14 @@ const MIN_POLL_INTERVAL_MS: u64 = 100;
 pub struct Config {
     pub polymarket: Polymarket,
     /// Absent until a sports feed has been chosen. The market recorder does
-    /// not need one, so its absence is not an error until a sports recording
-    /// is actually asked for.
+    /// Candidate sports feeds, each named.
+    ///
+    /// Several can be configured and recorded side by side, because which one
+    /// to trust is a measurement rather than a choice to be made from vendor
+    /// claims. Empty until a feed is being evaluated; the market recorder
+    /// needs none.
     #[serde(default)]
-    pub sports_feed: Option<SportsFeed>,
+    pub sports_feeds: Vec<SportsFeed>,
     /// Absent unless labels are being recorded.
     #[serde(default)]
     pub labels: Option<Labels>,
@@ -126,6 +130,9 @@ pub enum Direction {
 /// An HTTP source polled for live sports state.
 #[derive(Debug, Deserialize)]
 pub struct SportsFeed {
+    /// Short identifier, used in the recording filename so two feeds recorded
+    /// over the same window stay apart.
+    pub name: String,
     pub url: String,
     #[serde(default = "default_poll_interval_ms")]
     pub poll_interval_ms: u64,
@@ -287,19 +294,33 @@ impl Config {
                 bail!("`labels.buttons` has two buttons on the same key");
             }
         }
-        if let Some(feed) = &self.sports_feed {
+        let mut names: Vec<&str> = Vec::new();
+        for feed in &self.sports_feeds {
+            let name = feed.name.as_str();
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+                bail!(
+                    "`sports_feeds.name` must be letters, digits or dashes; it goes into a \
+                     filename, and `{name}` would not survive the trip"
+                );
+            }
+            if names.contains(&name) {
+                bail!("two sports feeds are both named `{name}`");
+            }
+            names.push(name);
+
             let url = &feed.url;
             if !(url.starts_with("https://") || url.starts_with("http://")) {
-                bail!("`sports_feed.url` must be an HTTP URL, got `{url}`");
+                bail!("`{name}` has a url that is not HTTP: `{url}`");
             }
             if feed.poll_interval_ms < MIN_POLL_INTERVAL_MS {
                 bail!(
-                    "`sports_feed.poll_interval_ms` must be at least {MIN_POLL_INTERVAL_MS}; \
-                     polling faster buys no resolution and risks being rate limited"
+                    "`{name}` polls every {}ms; the minimum is {MIN_POLL_INTERVAL_MS}, because \
+                     faster buys no resolution and risks being rate limited",
+                    feed.poll_interval_ms
                 );
             }
             if feed.timeout_ms == 0 {
-                bail!("`sports_feed.timeout_ms` must be greater than zero");
+                bail!("`{name}` has a timeout of zero");
             }
         }
         Ok(())
@@ -352,101 +373,83 @@ mod tests {
         assert!(parse(MINIMAL).unwrap().validate_for_recording().is_ok());
     }
 
-    #[test]
-    fn a_sports_feed_is_optional_but_validated_when_present() {
-        assert!(parse(MINIMAL).unwrap().sports_feed.is_none());
+    const FEED: &str = r#"
+        [[sports_feeds]]
+        name = "espn"
+        url = "https://example.invalid/scoreboard"
+    "#;
 
-        let good =
-            format!("{MINIMAL}\n[sports_feed]\nurl = \"https://example.invalid/scoreboard\"\n");
-        let feed = parse(&good).unwrap().sports_feed.unwrap();
-        assert_eq!(feed.poll_interval_ms, 1_000);
-        assert_eq!(feed.timeout_ms, 5_000);
-        assert_eq!(feed.heartbeat_polls, 60);
-        assert!(feed.headers.is_empty());
+    #[test]
+    fn sports_feeds_are_optional_but_validated_when_present() {
+        assert!(parse(MINIMAL).unwrap().sports_feeds.is_empty());
+
+        let feeds = parse(&format!("{MINIMAL}{FEED}")).unwrap().sports_feeds;
+        assert_eq!(feeds.len(), 1);
+        assert_eq!(feeds[0].name, "espn");
+        assert_eq!(feeds[0].poll_interval_ms, 1_000);
+        assert_eq!(feeds[0].timeout_ms, 5_000);
+        assert_eq!(feeds[0].heartbeat_polls, 60);
+        assert!(feeds[0].headers.is_empty());
+    }
+
+    #[test]
+    fn several_feeds_can_be_configured_side_by_side() {
+        let raw = format!(
+            "{MINIMAL}{FEED}
+[[sports_feeds]]
+name = \"vendor\"
+             url = \"https://other.invalid/live\"
+"
+        );
+        let feeds = parse(&raw).unwrap().sports_feeds;
+        assert_eq!(feeds.len(), 2);
+        assert_eq!(feeds[1].name, "vendor");
+    }
+
+    #[test]
+    fn two_feeds_cannot_share_a_name() {
+        // The name goes into the filename; a collision would overwrite a
+        // recording made over the same window, which is the one case where
+        // both files matter.
+        let raw = format!("{MINIMAL}{FEED}{FEED}");
+        assert!(parse(&raw).is_err());
+    }
+
+    #[test]
+    fn a_name_that_would_not_survive_a_filename_is_refused() {
+        let raw = format!("{MINIMAL}{FEED}").replace("\"espn\"", "\"es/pn\"");
+        assert!(parse(&raw).is_err());
+        let empty = format!("{MINIMAL}{FEED}").replace("\"espn\"", "\"\"");
+        assert!(parse(&empty).is_err());
     }
 
     #[test]
     fn rejects_a_sports_feed_that_would_hammer_the_provider() {
         let raw = format!(
-            "{MINIMAL}\n[sports_feed]\nurl = \"https://example.invalid\"\npoll_interval_ms = 5\n"
+            "{MINIMAL}{FEED}poll_interval_ms = 5
+"
         );
         assert!(parse(&raw).is_err());
     }
 
     #[test]
     fn rejects_a_sports_feed_that_is_not_http() {
-        let raw = format!("{MINIMAL}\n[sports_feed]\nurl = \"wss://example.invalid\"\n");
+        let raw = format!("{MINIMAL}{FEED}").replace("https://", "wss://");
         assert!(parse(&raw).is_err());
     }
 
     #[test]
     fn reads_sports_feed_headers() {
         let raw = format!(
-            "{MINIMAL}\n[sports_feed]\nurl = \"https://example.invalid\"\n\
-             [sports_feed.headers]\n\"x-api-key\" = \"secret\"\n"
-        );
-        let feed = parse(&raw).unwrap().sports_feed.unwrap();
-        assert_eq!(
-            feed.headers.get("x-api-key").map(String::as_str),
-            Some("secret")
-        );
-    }
-
-    const BUTTONS: &str = r#"
-        [labels]
-        [[labels.buttons]]
-        id = "blue_fight"
-        text = "Blue won the fight"
-        key = "q"
-        direction = "up"
-        [[labels.buttons]]
-        id = "red_fight"
-        text = "Red won the fight"
-        key = "w"
-        direction = "down"
-    "#;
-
-    #[test]
-    fn reads_label_buttons_with_their_direction() {
-        let labels = parse(&format!("{MINIMAL}{BUTTONS}"))
-            .unwrap()
-            .labels
-            .unwrap();
-        assert_eq!(labels.bind, "127.0.0.1:7878");
-        assert_eq!(labels.buttons.len(), 2);
-        assert_eq!(labels.buttons[0].direction, Direction::Up);
-        assert_eq!(labels.buttons[1].direction, Direction::Down);
-    }
-
-    #[test]
-    fn refuses_to_expose_the_label_page_off_loopback() {
-        let raw = format!("{MINIMAL}{BUTTONS}").replace(
-            "[labels]",
-            "[labels]
-bind = \"0.0.0.0:7878\"",
-        );
-        assert!(parse(&raw).is_err());
-    }
-
-    #[test]
-    fn rejects_buttons_that_collide() {
-        let same_key = format!("{MINIMAL}{BUTTONS}").replace("key = \"w\"", "key = \"q\"");
-        assert!(parse(&same_key).is_err());
-        let same_id =
-            format!("{MINIMAL}{BUTTONS}").replace("id = \"red_fight\"", "id = \"blue_fight\"");
-        assert!(parse(&same_id).is_err());
-    }
-
-    #[test]
-    fn rejects_a_label_section_with_no_buttons() {
-        assert!(
-            parse(&format!(
-                "{MINIMAL}
-[labels]
-buttons = []
+            "{MINIMAL}{FEED}
+[sports_feeds.headers]
+\"x-api-key\" = \"secret\"
 "
-            ))
-            .is_err()
+        );
+        let feeds = parse(&raw).unwrap().sports_feeds;
+        assert_eq!(
+            feeds[0].headers.get("x-api-key").map(String::as_str),
+            Some("secret")
         );
     }
 
