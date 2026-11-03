@@ -295,8 +295,8 @@ Both measurements run from the same tool, against the same replayed market.
 
 ```bash
 cargo run --release --bin analyse -- \
-  --market data/recordings/polymarket-<unix>.jsonl \
-  --labels data/recordings/labels-<unix>.jsonl
+  --market data/recordings/polymarket-<timestamp>.jsonl \
+  --labels data/recordings/labels-<timestamp>.jsonl
 ```
 
 For each key press it reports the signed offset to the nearest market signal.
@@ -328,7 +328,7 @@ out as a sell surge. A burst reports once, not once per trade in its tail.
 
 ```bash
 cargo run --release --bin analyse -- \
-  --market data/recordings/polymarket-<unix>.jsonl \
+  --market data/recordings/polymarket-<timestamp>.jsonl \
   --fee-bps 0 --hold-secs 30
 ```
 
@@ -355,8 +355,8 @@ takes nothing.
 
 ```bash
 cargo run --release --bin analyse -- \
-  --market data/recordings/polymarket-<unix>.jsonl \
-  --sports data/recordings/sports-<unix>.jsonl
+  --market data/recordings/polymarket-<timestamp>.jsonl \
+  --sports data/recordings/sports-<timestamp>.jsonl
 ```
 
 Both replay the market recording into a mid-price series by rebuilding the
@@ -403,7 +403,7 @@ can be made from evidence about the feed rather than a guess.
 
 ```bash
 cargo run --release --bin paper -- \
-  --market data/recordings/polymarket-<unix>.jsonl
+  --market data/recordings/polymarket-<timestamp>.jsonl
 ```
 
 Replays the recording through the rules in `[decision]` and `[execution]`:
@@ -437,8 +437,8 @@ hides which signal earned what.
 
 ```bash
 cargo run --release --bin dashboard -- \
-  --market data/recordings/polymarket-<unix>.jsonl \
-  --labels data/recordings/labels-<unix>.jsonl
+  --market data/recordings/polymarket-<timestamp>.jsonl \
+  --labels data/recordings/labels-<timestamp>.jsonl
 ```
 
 Writes one self-contained HTML file: the spread the book quoted, the trades
@@ -534,8 +534,8 @@ listed first in the recording.
 
 ```bash
 cargo run --release --bin analyse -- \
-  --market data/recordings/polymarket-<unix>.jsonl \
-  --labels data/recordings/labels-<unix>.jsonl
+  --market data/recordings/polymarket-<timestamp>.jsonl \
+  --labels data/recordings/labels-<timestamp>.jsonl
 ```
 
 One game will not settle anything. Teamfights worth labelling happen a few

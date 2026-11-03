@@ -87,10 +87,38 @@ impl Record {
     }
 }
 
+/// Names the recordings sitting next to a path that could not be read.
+///
+/// A recording is identified by a unix timestamp nobody memorises, so the
+/// usual mistake is a stale or mistyped name — including pasting the
+/// `<unix>` placeholder straight out of the documentation. An error that
+/// lists what is actually there turns that into one more keystroke instead
+/// of a directory listing.
+fn nearby(path: &Path) -> String {
+    let dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return String::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".jsonl"))
+        .collect();
+    if names.is_empty() {
+        return String::new();
+    }
+    names.sort();
+    names.truncate(8);
+    format!("; `{}` holds: {}", dir.display(), names.join(", "))
+}
+
 /// Loads a recording, failing with the line number that could not be parsed.
 pub fn read(path: &Path) -> Result<Vec<Record>> {
     let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("cannot read `{}`", path.display()))?;
+        .with_context(|| format!("cannot read `{}`{}", path.display(), nearby(path)))?;
     raw.lines()
         .enumerate()
         .filter(|(_, line)| !line.trim().is_empty())
@@ -187,6 +215,31 @@ mod tests {
             })
             .collect();
         assert_eq!(missing_sequences(&records), vec![(2, 5), (6, 9)]);
+    }
+
+    #[test]
+    fn a_missing_file_points_at_the_ones_that_are_there() {
+        let dir = std::env::temp_dir().join("tick-to-trade-replay-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("polymarket-1.jsonl"), "").unwrap();
+        std::fs::write(dir.join("notes.txt"), "").unwrap();
+
+        let error = read(&dir.join("polymarket-<unix>.jsonl")).unwrap_err();
+        let text = format!("{error:#}");
+        assert!(text.contains("polymarket-1.jsonl"), "{text}");
+        assert!(!text.contains("notes.txt"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_empty_directory_adds_nothing_to_the_error() {
+        let dir = std::env::temp_dir().join("tick-to-trade-replay-empty");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let error = read(&dir.join("missing.jsonl")).unwrap_err();
+        assert!(!format!("{error:#}").contains("holds:"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
