@@ -88,16 +88,26 @@ be checked against anything but money.
 
 ## 3. Design choices
 
-| Choice | Rationale | Measured impact |
-|---|---|---|
-| Rust | No GC pauses, predictable tail latency | not measured |
-| Single-threaded event loop | No context switches or lock contention on the hot path | not measured |
-| Pre-built orders | Keeps serialisation and signing off the hot path | not measured |
-| VPS region selection | Network is expected to be the largest fixed cost | not measured |
+Only choices actually made, with what is known about each. The earlier version
+of this table listed a single-threaded event loop, pre-built orders and a VPS
+region — none of which exist, two of which belong to a pipeline that has not
+been built, and the first of which is simply not what the recorders do.
 
-Each row is a hypothesis about where the latency goes. The point of the project
-is to replace "not measured" with a number, and to drop the choices that turn
-out not to matter.
+| Choice | Why | What is known |
+|---|---|---|
+| Rust | No GC pauses, predictable tail latency | p99 of 120 µs socket to written (§4) |
+| Stamp before parsing | Parsing cost belongs to the recorder, not the market | parse costs 2.4 µs and sits outside the stamp |
+| Writer on its own task, behind a bounded queue | A slow write must not delay the next read | no stall in any recording so far |
+| A full queue waits rather than drops | A hole in a recording is worse than a delay in it | stalls are counted and reported per run |
+| Per-task histograms, merged once at the end | A shared locked histogram would measure its own contention | — |
+| Frames stored verbatim, never normalised on the way in | Which fields matter is not known yet, and a raw recording can be re-analysed | — |
+| Two clocks on every record | Monotonic cannot be compared across processes; wall clock can jump | the two agreed within 0.2 µs over 23 s |
+| `rustls` rather than OpenSSL | TLS is linked in, so a Linux build needs no system packages | not yet exercised: CI has not run |
+| Hand-written SVG for the figures | One file, no runtime, nothing to serve | — |
+
+Pipeline-level choices — where inference runs, how orders are pre-built, which
+region to deploy in — are absent because the pipeline is. Guessing at them now
+would be the thing §1 says not to do.
 
 ## 4. Latency budget
 
@@ -138,8 +148,11 @@ acknowledgement — do not exist yet, and no figure is invented for them.
 
 ## 5. Results
 
-The hypothesis is not yet tested: that needs a sports feed that actually shows
-events, and no such feed has been found. Three things have been measured.
+Neither hypothesis has an answer yet. H1 needs a sports feed that actually
+shows events and none has been found; H2 needs recordings of live matches with
+a spectator pressing keys, which is a matter of sitting through games. Four
+things have been measured in the meantime, and one of them is about this code
+rather than about the market.
 
 **The book reconstruction is correct, and the check earns its keep.**
 Replaying a 17-minute recording of a live Serie A market, the order book
@@ -176,12 +189,17 @@ A noisy feed will otherwise manufacture whatever result it is asked for.
 *Sample: one match, one market, 1,020 s, 7,649 market frames, 24 stored feed
 responses, no sequence gaps and no recorder stalls.*
 
+**The recorder costs 19 µs.** Measured rather than assumed, and reported in
+§4. It matters here only as a floor: whatever the market turns out to do, this
+part of the chain is not what will have hidden it.
+
 Still to measure, with the sample size and the method stated:
 
-- the observed repricing window, once a feed shows events,
-- captured edge as a function of end-to-end latency,
+- how far the order book leads an ordinary spectator (H2),
+- whether a detected surge continues far enough to clear fees and spread,
+- the repricing window, once a feed shows events (H1),
 - the net result after fees and slippage,
-- whether the hypothesis is validated, rejected, or holds only in some
+- whether each hypothesis is validated, rejected, or holds only in some
   conditions.
 
 A negative result is a result and will be published as one.
@@ -194,8 +212,15 @@ A negative result is a result and will be published as one.
   exists.
 - Platform rules (order delays, terms of use) can remove the edge entirely, and
   can change at any time.
-- Paper-mode results overstate live performance: they assume fills that a real
-  order book may not provide.
+- Paper results overstate live performance: every fill is taken at the touch,
+  which a thin book will not absorb. The figures are an upper bound and the
+  tool says so each time it prints them.
+- The spectator baseline is one person's reaction time, not a universal
+  constant. It measures how far the book led *you*, which is the operationally
+  useful number and not a property of the market.
+- Being able to see a lead is not the same as being able to trade it. Anything
+  visible in the book is visible to faster readers of the book, so a lead that
+  survives measurement still has to survive competition.
 
 ## 7. Running it
 
