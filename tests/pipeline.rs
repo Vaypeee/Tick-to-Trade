@@ -95,16 +95,31 @@ fn acting_promptly_pays_and_acting_late_does_not() {
     let surges = flow::surges(&trades, &asset, 5_000_000_000, 5_000.0);
 
     let prompt = edge::study(&surges, &quotes, &asset, 0, HOLD_NS, 0.0);
-    let late = edge::study(&surges, &quotes, &asset, 10 * 1_000_000_000, HOLD_NS, 0.0);
-
     assert_eq!(prompt.trials.len(), 1);
-    assert_eq!(late.trials.len(), 1);
+    assert_eq!(prompt.truncated, 0);
 
     // Entering before the touch moved: buy 0.42, close at 0.50.
     assert_eq!(prompt.trials[0].entry, 0.42);
     assert!((prompt.trials[0].net - 0.08).abs() < 1e-9);
 
-    // Ten seconds late: buy 0.52, close at 0.49.
+    // The same hold ten seconds later runs off the end of the recording, so
+    // it is dropped rather than closed at a quote standing in for time
+    // nobody observed.
+    let past_the_end = edge::study(&surges, &quotes, &asset, 10 * 1_000_000_000, HOLD_NS, 0.0);
+    assert!(past_the_end.trials.is_empty());
+    assert_eq!(past_the_end.truncated, 1);
+
+    // Shortened so it finishes inside the recording, the late entry loses:
+    // buy 0.52, close at 0.50.
+    let late = edge::study(
+        &surges,
+        &quotes,
+        &asset,
+        10 * 1_000_000_000,
+        20 * 1_000_000_000,
+        0.0,
+    );
+    assert_eq!(late.trials.len(), 1);
     assert_eq!(late.trials[0].entry, 0.52);
     assert!(late.trials[0].net < 0.0);
 }

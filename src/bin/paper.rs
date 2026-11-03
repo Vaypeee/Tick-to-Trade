@@ -121,7 +121,20 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Args>, String
 }
 
 /// The book as it stood, from the replayed quote series.
+///
+/// Returns nothing past the last quote. The recording says nothing about
+/// what happened after it ended, and answering with the final quote would
+/// let a position be closed at a price that stood in for minutes nobody
+/// observed.
 fn touch_at(quotes: &[Quote], asset: &str, at_unix_ns: u64) -> Option<Touch> {
+    let last_seen = quotes
+        .iter()
+        .rev()
+        .find(|quote| quote.asset == asset)?
+        .at_unix_ns;
+    if at_unix_ns > last_seen {
+        return None;
+    }
     quotes
         .iter()
         .rev()
@@ -252,12 +265,19 @@ fn run(args: &Args) -> Result<()> {
     );
     for (expected, result) in &results {
         let trades = result.trades.len();
+        // Positions that could not be closed are named rather than left out
+        // silently: a row built from half the signals should say so, and a
+        // row built from none of them should say why.
+        let note = match result.abandoned {
+            0 => String::new(),
+            dropped => format!("  ({dropped} ran past the end of the recording)"),
+        };
         if trades == 0 {
-            println!("  {expected:>10.3} {:>7} {:>11}", 0, "-");
+            println!("  {expected:>10.3} {:>7} {:>11}{note}", 0, "-");
             continue;
         }
         println!(
-            "  {expected:>10.3} {trades:>7} {:>+11.3} {:>6.0}% {:>11.3}",
+            "  {expected:>10.3} {trades:>7} {:>+11.3} {:>6.0}% {:>11.3}{note}",
             result.net(),
             100.0 * result.wins() as f64 / trades as f64,
             result.max_drawdown(),
@@ -387,5 +407,9 @@ mod tests {
         assert_eq!(found.ask_size, 7.0);
         assert!(touch_at(&quotes, "A", 50).is_none());
         assert!(touch_at(&quotes, "B", 400).is_none());
+        // Past the end the recording knows nothing, and says so rather than
+        // offering the last quote for an instant it never covered.
+        assert!(touch_at(&quotes, "A", 300).is_some());
+        assert!(touch_at(&quotes, "A", 301).is_none());
     }
 }

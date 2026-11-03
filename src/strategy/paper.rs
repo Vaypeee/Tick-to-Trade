@@ -115,7 +115,7 @@ where
         if let Some((opened_at, side, entry, size)) = open {
             let exit_at = opened_at.saturating_add(hold_ns);
             if exit_at <= entry_at {
-                match close(
+                close(
                     &mut result,
                     touch_at(exit_at),
                     opened_at,
@@ -124,16 +124,20 @@ where
                     entry,
                     size,
                     limits,
-                ) {
-                    true => open = None,
-                    false => {
-                        open = None;
-                    }
-                }
+                );
+                open = None;
             }
         }
 
-        let position = open.map_or(0.0, |(_, side, _, size)| side.sign() * size);
+        // Still holding, so this signal is not acted on. The rules would
+        // allow scaling in whenever `size` fits inside `max_position`, but
+        // this replay carries one position at a time: taking the entry would
+        // overwrite the open one and lose it from the books entirely.
+        if open.is_some() {
+            result.refuse(Refusal::PositionFull);
+            continue;
+        }
+
         let signed_move = if signal.rose {
             expected_move.abs()
         } else {
@@ -144,7 +148,7 @@ where
             signed_move,
             react_ns,
             touch_at(entry_at).as_ref(),
-            position,
+            0.0,
             limits,
         ) {
             Decision::Enter {
@@ -174,6 +178,11 @@ where
     result
 }
 
+/// Books a position out, or reports that it could not be.
+///
+/// Returns nothing: an earlier version handed back whether the close
+/// succeeded and both callers ignored it, which made a dropped position look
+/// like a deliberate one.
 #[allow(clippy::too_many_arguments)]
 fn close(
     result: &mut Run,
@@ -184,12 +193,12 @@ fn close(
     entry: f64,
     size: f64,
     limits: &Limits,
-) -> bool {
+) {
     let Some(touch) = touch else {
         // The position cannot be valued, so it is reported rather than
         // closed at a price the market never showed.
         result.abandoned += 1;
-        return false;
+        return;
     };
 
     // Closing crosses back: a long sells the bid, a short buys the ask.
@@ -212,7 +221,6 @@ fn close(
         size,
         net,
     });
-    true
 }
 
 /// Runs the same replay across a ladder of expected moves.
@@ -302,6 +310,31 @@ mod tests {
         let result = run(&signals, rising, 0.01, 0, 1_000, &limits());
         assert!(result.trades.is_empty());
         assert_eq!(result.refusals.get("edge below cost"), Some(&1));
+    }
+
+    #[test]
+    fn a_signal_arriving_mid_hold_cannot_replace_the_open_position() {
+        // Limits that allow scaling in: the rules would say yes, but this
+        // replay holds one position, so taking the entry would drop the
+        // first one without ever booking it.
+        let mut roomy = limits();
+        roomy.max_position = 100.0;
+
+        let signals = [
+            Signal {
+                at_unix_ns: 100,
+                rose: true,
+            },
+            Signal {
+                at_unix_ns: 200,
+                rose: true,
+            },
+        ];
+        let result = run(&signals, rising, 0.10, 0, 1_000, &roomy);
+
+        assert_eq!(result.trades.len(), 1);
+        assert_eq!(result.trades[0].entered_unix_ns, 100);
+        assert_eq!(result.refusals.get("position full"), Some(&1));
     }
 
     #[test]

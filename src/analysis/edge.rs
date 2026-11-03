@@ -44,6 +44,13 @@ pub struct Study {
     /// Surges with no quote to enter or exit against, which are skipped
     /// rather than filled at a price that was never shown.
     pub skipped: usize,
+    /// Surges whose hold would have run past the end of the recording.
+    ///
+    /// The last quote stands in for every instant after it, so holding a
+    /// trial past the end books a full round trip against a few seconds of
+    /// data. Surges cluster where the market is busy, so the bias is not
+    /// random; these are dropped and counted instead.
+    pub truncated: usize,
 }
 
 impl Study {
@@ -92,10 +99,24 @@ pub fn study(
 ) -> Study {
     let mut trials = Vec::new();
     let mut skipped = 0;
+    let mut truncated = 0;
+
+    // Past this instant the series says nothing, and the last quote would
+    // silently answer for all of it.
+    let last_seen = quotes
+        .iter()
+        .rev()
+        .find(|quote| quote.asset == asset)
+        .map(|quote| quote.at_unix_ns);
 
     for surge in surges.iter().filter(|surge| surge.asset == asset) {
         let entered_at = surge.at_unix_ns.saturating_add(react_ns);
         let closed_at = entered_at.saturating_add(hold_ns);
+
+        if last_seen.is_some_and(|last| closed_at > last) {
+            truncated += 1;
+            continue;
+        }
 
         let (Some((entry_bid, entry_ask)), Some((exit_bid, exit_ask))) = (
             touch_at(quotes, asset, entered_at),
@@ -127,7 +148,11 @@ pub fn study(
         });
     }
 
-    Study { trials, skipped }
+    Study {
+        trials,
+        skipped,
+        truncated,
+    }
 }
 
 /// The reaction delays the curve is reported over, in milliseconds.
@@ -232,6 +257,20 @@ mod tests {
         let charged = study(&[surge(100, 500.0)], &quotes(), "A", 0, 100, 0.01);
         let expected = free.trials[0].net - 0.01 * (0.42 + 0.45);
         assert!((charged.trials[0].net - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_hold_that_outlives_the_recording_is_not_booked() {
+        // The series stops at 300; a thirty-unit hold from 100 would be
+        // closed at the last quote as though it had run its course.
+        let result = study(&[surge(100, 500.0)], &quotes(), "A", 0, 10_000, 0.0);
+        assert!(result.trials.is_empty());
+        assert_eq!(result.truncated, 1);
+
+        // A hold that finishes inside the recording is unaffected.
+        let inside = study(&[surge(100, 500.0)], &quotes(), "A", 0, 100, 0.0);
+        assert_eq!(inside.trials.len(), 1);
+        assert_eq!(inside.truncated, 0);
     }
 
     #[test]
