@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 300" width="980" height="300" role="img" aria-label="Two websocket feeds enter a single-threaded event loop: the sports feed is parsed into events, scored into a fair probability and compared against the order book before an order is sent to the Polymarket CLOB. Latency is timestamped at every boundary.">
-  <title>Tick to trade — hot path</title>
-  <desc>The sports feed flows through ingestion, inference and decision inside a single-threaded tokio event loop, then out through execution to the Polymarket CLOB API. A separate websocket keeps order book state, which the decision stage reads for best bid and ask.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 450" width="1000" height="450" role="img" aria-label="Three feeds are recorded to disk with two clocks each. A replay rebuilds the order book from the recordings and feeds the analysis, the paper trader and the dashboard. The live trading pipeline is drawn dashed because it has not been built.">
+  <title>Tick to trade — what runs, and what does not</title>
+  <desc>Sports feed, Polymarket order book and a spectator pressing keys are each captured by a recorder into timestamped JSON Lines. A replay rebuilds the book from those files and drives the analysis, the paper trader and the dashboard. Inference, decision and execution are drawn dashed: they are not built, because the measurement has not justified building them.</desc>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
@@ -13,66 +13,103 @@
 
   <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
 
-    <!-- event loop boundary -->
-    <rect x="200" y="48" width="470" height="192" rx="10" fill="#161b22" stroke="#30363d" stroke-width="1" stroke-dasharray="5 4"/>
-    <text x="435" y="70" text-anchor="middle" font-size="11" fill="#8b949e">single-threaded async event loop (tokio)</text>
-
     <!-- sources -->
-    <rect x="16" y="95" width="148" height="46" rx="6" fill="#21262d" stroke="#484f58"/>
-    <text x="90" y="122" text-anchor="middle" font-size="12.5" fill="#e6edf3">Live sports feed</text>
+    <rect x="14" y="36" width="152" height="42" rx="6" fill="#21262d" stroke="#484f58"/>
+    <text x="90" y="56" text-anchor="middle" font-size="12" fill="#e6edf3">Live sports feed</text>
+    <text x="90" y="70" text-anchor="middle" font-size="9.5" fill="#8b949e">http, polled</text>
 
-    <rect x="16" y="172" width="148" height="46" rx="6" fill="#21262d" stroke="#484f58"/>
-    <text x="90" y="199" text-anchor="middle" font-size="12.5" fill="#e6edf3">Polymarket CLOB</text>
+    <rect x="14" y="98" width="152" height="42" rx="6" fill="#21262d" stroke="#484f58"/>
+    <text x="90" y="118" text-anchor="middle" font-size="12" fill="#e6edf3">Polymarket CLOB</text>
+    <text x="90" y="132" text-anchor="middle" font-size="9.5" fill="#8b949e">websocket, public</text>
 
-    <!-- pipeline stages -->
-    <rect x="220" y="92" width="118" height="52" rx="6" fill="#21262d" stroke="#484f58"/>
-    <text x="279" y="114" text-anchor="middle" font-size="12.5" fill="#e6edf3">Ingestion</text>
-    <text x="279" y="130" text-anchor="middle" font-size="10" fill="#8b949e">parse · normalise</text>
+    <rect x="14" y="160" width="152" height="42" rx="6" fill="#21262d" stroke="#484f58"/>
+    <text x="90" y="180" text-anchor="middle" font-size="12" fill="#e6edf3">You, on the stream</text>
+    <text x="90" y="194" text-anchor="middle" font-size="9.5" fill="#8b949e">keys, no advantage</text>
 
-    <rect x="372" y="92" width="118" height="52" rx="6" fill="#21262d" stroke="#484f58"/>
-    <text x="431" y="114" text-anchor="middle" font-size="12.5" fill="#e6edf3">Inference</text>
-    <text x="431" y="130" text-anchor="middle" font-size="10" fill="#8b949e">fair probability</text>
+    <!-- recorders -->
+    <rect x="212" y="36" width="156" height="42" rx="6" fill="#21262d" stroke="#484f58"/>
+    <text x="290" y="62" text-anchor="middle" font-size="11.5" fill="#e6edf3">record --feed sports</text>
 
-    <rect x="524" y="92" width="118" height="52" rx="6" fill="#21262d" stroke="#484f58"/>
-    <text x="583" y="114" text-anchor="middle" font-size="12.5" fill="#e6edf3">Decision</text>
-    <text x="583" y="130" text-anchor="middle" font-size="10" fill="#8b949e">edge &gt; cost</text>
+    <rect x="212" y="98" width="156" height="42" rx="6" fill="#21262d" stroke="#484f58"/>
+    <text x="290" y="124" text-anchor="middle" font-size="11.5" fill="#e6edf3">record --feed polymarket</text>
 
-    <rect x="524" y="172" width="118" height="46" rx="6" fill="#21262d" stroke="#484f58"/>
-    <text x="583" y="192" text-anchor="middle" font-size="12.5" fill="#e6edf3">Order book</text>
-    <text x="583" y="207" text-anchor="middle" font-size="10" fill="#8b949e">best bid / ask</text>
+    <rect x="212" y="160" width="156" height="42" rx="6" fill="#21262d" stroke="#484f58"/>
+    <text x="290" y="186" text-anchor="middle" font-size="11.5" fill="#e6edf3">record --feed labels</text>
 
-    <rect x="706" y="92" width="128" height="52" rx="6" fill="#21262d" stroke="#484f58"/>
-    <text x="770" y="114" text-anchor="middle" font-size="12.5" fill="#e6edf3">Execution</text>
-    <text x="770" y="130" text-anchor="middle" font-size="10" fill="#8b949e">pre-built order</text>
+    <!-- store -->
+    <rect x="414" y="80" width="146" height="78" rx="6" fill="#161b22" stroke="#58a6ff"/>
+    <text x="487" y="106" text-anchor="middle" font-size="12" fill="#e6edf3">Recordings</text>
+    <text x="487" y="122" text-anchor="middle" font-size="9.5" fill="#8b949e">JSON Lines, verbatim</text>
+    <text x="487" y="136" text-anchor="middle" font-size="9.5" fill="#8b949e">wall + monotonic clocks</text>
 
-    <rect x="872" y="92" width="92" height="52" rx="6" fill="#21262d" stroke="#484f58"/>
-    <text x="918" y="123" text-anchor="middle" font-size="12.5" fill="#e6edf3">CLOB API</text>
+    <!-- replay -->
+    <rect x="606" y="98" width="146" height="42" rx="6" fill="#21262d" stroke="#484f58"/>
+    <text x="679" y="118" text-anchor="middle" font-size="12" fill="#e6edf3">Replay</text>
+    <text x="679" y="132" text-anchor="middle" font-size="9.5" fill="#8b949e">rebuilds the book</text>
 
-    <!-- hot path -->
-    <g stroke="#58a6ff" stroke-width="1.6" fill="none" marker-end="url(#arrow-hot)">
-      <line x1="164" y1="118" x2="214" y2="118"/>
-      <line x1="338" y1="118" x2="366" y2="118"/>
-      <line x1="490" y1="118" x2="518" y2="118"/>
-      <line x1="642" y1="118" x2="700" y2="118"/>
-      <line x1="834" y1="118" x2="866" y2="118"/>
-    </g>
-    <g font-size="9.5" fill="#58a6ff" text-anchor="middle">
-      <text x="189" y="111">ws</text>
-      <text x="352" y="111">event</text>
-      <text x="504" y="111">fair p</text>
-      <text x="671" y="111">order</text>
-    </g>
+    <!-- outputs -->
+    <rect x="798" y="36" width="188" height="42" rx="6" fill="#21262d" stroke="#484f58"/>
+    <text x="892" y="56" text-anchor="middle" font-size="11.5" fill="#e6edf3">analyse</text>
+    <text x="892" y="70" text-anchor="middle" font-size="9.5" fill="#8b949e">lead, flow, edge vs latency</text>
 
-    <!-- order book state path -->
+    <rect x="798" y="98" width="188" height="42" rx="6" fill="#21262d" stroke="#484f58"/>
+    <text x="892" y="118" text-anchor="middle" font-size="11.5" fill="#e6edf3">paper</text>
+    <text x="892" y="132" text-anchor="middle" font-size="9.5" fill="#8b949e">rules, costs, break-even</text>
+
+    <rect x="798" y="160" width="188" height="42" rx="6" fill="#21262d" stroke="#484f58"/>
+    <text x="892" y="180" text-anchor="middle" font-size="11.5" fill="#e6edf3">dashboard</text>
+    <text x="892" y="194" text-anchor="middle" font-size="9.5" fill="#8b949e">one timeline</text>
+
+    <!-- arrows: sources to recorders -->
     <g stroke="#8b949e" stroke-width="1.3" fill="none" marker-end="url(#arrow)">
-      <line x1="164" y1="195" x2="518" y2="195"/>
-      <line x1="583" y1="172" x2="583" y2="150"/>
+      <line x1="166" y1="57" x2="206" y2="57"/>
+      <line x1="166" y1="181" x2="206" y2="181"/>
     </g>
-    <text x="330" y="188" text-anchor="middle" font-size="9.5" fill="#8b949e">ws · book updates</text>
+    <g stroke="#58a6ff" stroke-width="1.6" fill="none" marker-end="url(#arrow-hot)">
+      <line x1="166" y1="119" x2="206" y2="119"/>
+    </g>
 
-    <!-- latency bracket -->
-    <path d="M16,258 L16,268 L964,268 L964,258" fill="none" stroke="#58a6ff" stroke-width="1.3"/>
-    <text x="490" y="287" text-anchor="middle" font-size="10.5" fill="#58a6ff">end-to-end latency — timestamped at every boundary (see §4)</text>
+    <!-- arrows: recorders into the store -->
+    <g stroke="#8b949e" stroke-width="1.3" fill="none" marker-end="url(#arrow)">
+      <path d="M368,57 L392,57 L392,100 L408,100"/>
+      <path d="M368,181 L392,181 L392,138 L408,138"/>
+    </g>
+    <g stroke="#58a6ff" stroke-width="1.6" fill="none" marker-end="url(#arrow-hot)">
+      <line x1="368" y1="119" x2="408" y2="119"/>
+    </g>
+
+    <!-- store to replay, replay to outputs -->
+    <g stroke="#58a6ff" stroke-width="1.6" fill="none" marker-end="url(#arrow-hot)">
+      <line x1="560" y1="119" x2="600" y2="119"/>
+      <path d="M752,119 L776,119 L776,57 L792,57"/>
+      <line x1="752" y1="119" x2="792" y2="119"/>
+      <path d="M752,119 L776,119 L776,181 L792,181"/>
+    </g>
+
+    <!-- not built -->
+    <rect x="212" y="268" width="774" height="104" rx="10" fill="none" stroke="#30363d" stroke-width="1" stroke-dasharray="6 5"/>
+    <text x="232" y="292" font-size="11" fill="#8b949e">Live pipeline — not built</text>
+
+    <rect x="236" y="304" width="150" height="40" rx="6" fill="none" stroke="#30363d" stroke-dasharray="4 4"/>
+    <text x="311" y="329" text-anchor="middle" font-size="11.5" fill="#8b949e">Inference</text>
+
+    <rect x="428" y="304" width="150" height="40" rx="6" fill="none" stroke="#30363d" stroke-dasharray="4 4"/>
+    <text x="503" y="329" text-anchor="middle" font-size="11.5" fill="#8b949e">Decision</text>
+
+    <rect x="620" y="304" width="150" height="40" rx="6" fill="none" stroke="#30363d" stroke-dasharray="4 4"/>
+    <text x="695" y="329" text-anchor="middle" font-size="11.5" fill="#8b949e">Execution</text>
+
+    <rect x="812" y="304" width="150" height="40" rx="6" fill="none" stroke="#30363d" stroke-dasharray="4 4"/>
+    <text x="887" y="329" text-anchor="middle" font-size="11.5" fill="#8b949e">CLOB</text>
+
+    <g stroke="#30363d" stroke-width="1.2" fill="none" stroke-dasharray="4 4">
+      <line x1="386" y1="324" x2="424" y2="324"/>
+      <line x1="578" y1="324" x2="616" y2="324"/>
+      <line x1="770" y1="324" x2="808" y2="324"/>
+    </g>
+
+    <text x="212" y="398" font-size="10.5" fill="#8b949e">The decision rules exist and are tested offline; nothing sends an order. The rest waits until the measurement says it is worth building.</text>
+    <text x="14" y="424" font-size="10.5" fill="#58a6ff">Blue is the path that runs today: record the book, replay it, measure against a spectator who had no advantage.</text>
 
   </g>
 </svg>

@@ -72,6 +72,7 @@ fn count_recordings(dir: &Path) -> Option<(usize, usize, usize)> {
     Some((market, sports, labels))
 }
 
+/// Returns whether a recording could start, for the closing hint.
 fn check(path: &Path) -> Result<bool> {
     println!("configuration: {}", path.display());
     let config = Config::load(path)?;
@@ -171,10 +172,11 @@ fn main() -> ExitCode {
     };
 
     match check(&path) {
-        Ok(true) => ExitCode::SUCCESS,
-        // A configuration that cannot record is not a crash, but it is not a
-        // success either: a script that chains this should stop here.
-        Ok(false) => ExitCode::FAILURE,
+        // A configuration that is valid but not yet complete is a report, not
+        // a failure. Exiting non-zero made `cargo run` print "process didn't
+        // exit successfully" over a status line that had just explained
+        // itself, which reads like a crash and is not one.
+        Ok(_) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error:#}");
             ExitCode::FAILURE

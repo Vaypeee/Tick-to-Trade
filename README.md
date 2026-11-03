@@ -55,27 +55,36 @@ The questions, in the order they can actually be answered:
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
-    <img alt="Two websocket feeds enter a single-threaded event loop: the sports feed is parsed into events, scored into a fair probability, and compared against order book state before an order is sent to the Polymarket CLOB. Latency is timestamped at every boundary." src="assets/architecture-light.svg" width="900">
+    <img alt="Three feeds are each captured by a recorder into timestamped JSON Lines. A replay rebuilds the order book from those files and drives the analysis, the paper trader and the dashboard. Inference, decision and execution are drawn dashed because they have not been built." src="assets/architecture-light.svg" width="900">
   </picture>
 </p>
 
-This is the architecture the project is aimed at, not what runs today; §7 says
-what exists. The sports feed drives the hot path: every stage between a
-real-world event and an order leaving the process is on the latency budget. The CLOB websocket is a
-separate, continuous stream — it keeps order book state so the decision stage
-can price the spread it would actually cross.
+Solid is what runs. Dashed is what does not, and deliberately so: until the
+measurements say a fast trading path is worth building, building one would be
+the mistake this project exists to avoid.
 
-- **Ingestion** — websocket client for the sports feed, parsing each frame into
-  a normalised event; zero-copy where the format allows it.
-- **Order book state** — a second websocket client maintaining the CLOB book,
-  so the decision stage prices against the spread it would actually cross.
-- **Inference** — a lightweight model estimating the post-event probability.
-- **Decision** — trade only if the estimated edge exceeds fees + spread + a
-  safety margin.
-- **Execution** — orders pre-built ahead of time to minimise work on the hot
-  path.
-- **Deployment** — VPS region chosen by measured round-trip time to the data
-  feed and to the Polymarket API.
+**What runs.** Three recorders write whatever their feed shows, verbatim, one
+JSON object per line, stamped on two clocks. A replay rebuilds the order book
+from the snapshot and the deltas and feeds everything downstream: the analysis
+that compares the market against a feed, against a spectator and against
+itself; the paper trader that applies the rules with their real costs; the
+dashboard that draws the lot on one timeline.
+
+**What does not.** Inference, execution and the live hot path. The decision
+layer is the exception: the rules exist and are tested offline, because rules
+can be checked against recordings for nothing, while an execution path cannot
+be checked against anything but money.
+
+- **Recorders** — one process per feed, each timestamping before it parses,
+  so no recorder work lands inside the measurement.
+- **Recordings** — raw frames, never normalised on the way in. Which fields
+  matter is one of the things the project does not know yet, and a raw
+  recording can be re-analysed while a parsed one cannot.
+- **Replay** — rebuilds the book and cross-checks itself against the touch the
+  exchange reports, so the reconstruction the live pipeline will depend on is
+  known to be right rather than assumed.
+- **Decision** — trade only if the expected move clears the full round trip:
+  the spread crossed twice, plus fees on both legs.
 
 ## 3. Design choices
 
@@ -466,7 +475,7 @@ no pipeline: until the measurements justify building one, there should not be.
 It checks the configuration instead and says what is ready — how many outcomes
 are subscribed, whether the labelling page has keys bound, what rules the
 decision layer would apply, how many recordings are already on disk — and
-exits non-zero if something would stop a recording.
+names what is still missing before a recording can start.
 
 That is worth a command of its own because a mistake in the configuration
 only shows up as an empty recording, and the match is over by then.
