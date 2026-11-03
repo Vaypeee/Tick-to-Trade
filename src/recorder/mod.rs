@@ -6,10 +6,16 @@
 //! rather than months. Recordings also give every later benchmark something
 //! reproducible to run against, which a live feed never can.
 //!
-//! Two feeds are recorded, in the same format and against the same clocks:
-//! [`polymarket`] for the market, [`sports`] for the real-world events the
-//! market is supposed to be slow to price. Neither is useful alone. The
-//! measurement is the offset between them.
+//! Three feeds are recorded, in one format and against one pair of clocks,
+//! which is what makes them comparable afterwards:
+//!
+//! - [`polymarket`] — the order book, over the public websocket channel.
+//! - [`sports`] — a data feed, polled, with its own lag left visible.
+//! - [`labels`] — key presses from somebody watching the public broadcast,
+//!   which is the baseline the market is measured against.
+//!
+//! None of them is useful alone. Every measurement in this project is an
+//! offset between two of them.
 
 pub mod capture;
 pub mod labels;

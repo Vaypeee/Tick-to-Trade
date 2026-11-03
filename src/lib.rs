@@ -1,12 +1,19 @@
 //! Infrastructure for the tick-to-trade experiment.
 //!
-//! Two halves exist today, and neither touches the live pipeline. [`recorder`]
-//! captures raw feeds to disk with timestamps; [`analysis`] replays those
-//! recordings offline and measures the lag between a real-world event and the
-//! market repricing. The hypothesis behind this project is testable from
-//! recordings alone, without a fast system, so that is what was built first.
-//! The pipeline follows once the measurement says what latency budget is
-//! actually worth chasing.
+//! Nothing here sends an order, and that is the point. Both hypotheses the
+//! project is built around are testable from recordings alone, so the
+//! measurement apparatus came first and the fast system waits for a reason to
+//! exist.
+//!
+//! - [`recorder`] captures a feed to disk, verbatim, stamped on two clocks.
+//! - [`analysis`] replays those files: rebuilding the order book, extracting
+//!   trades and bursts of taking, and comparing the market against a data
+//!   feed, against a spectator, and against itself.
+//! - [`strategy`] holds the trading rules. They are pure functions, tested
+//!   against recordings, because rules can be checked for nothing while an
+//!   execution path can only be checked against money.
+//! - [`report`] draws a recording as a timeline, in replay only.
+//! - [`config`] and [`tls`] are the plumbing the rest needs.
 
 pub mod analysis;
 pub mod config;
