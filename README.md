@@ -102,7 +102,7 @@ been built, and the first of which is simply not what the recorders do.
 | Per-task histograms, merged once at the end | A shared locked histogram would measure its own contention | — |
 | Frames stored verbatim, never normalised on the way in | Which fields matter is not known yet, and a raw recording can be re-analysed | — |
 | Two clocks on every record | Monotonic cannot be compared across processes; wall clock can jump | the two agreed within 0.2 µs over 23 s |
-| `rustls` rather than OpenSSL | TLS is linked in, so a Linux build needs no system packages | not yet exercised: CI has not run |
+| `rustls` rather than OpenSSL | TLS is linked in, so a Linux build needs no system packages | every CI step passes locally; the workflow itself has not run on GitHub |
 | Hand-written SVG for the figures | One file, no runtime, nothing to serve | — |
 
 Pipeline-level choices — where inference runs, how orders are pre-built, which
@@ -626,7 +626,10 @@ cargo test --all-targets
 ```
 
 CI runs all three on every push, with warnings promoted to errors: a lint that
-only fails on one machine is a lint nobody fixes. Nothing in the test suite
+only fails on one machine is a lint nobody fixes. Every step of the workflow
+has been run locally in the exact form it uses — including `--all-features`
+and the global `RUSTFLAGS` — so the first push should not be the first time
+anyone finds out whether it works. Nothing in the test suite
 touches the network — every test runs against fixtures or hand-built inputs —
 which is what makes them worth running on a machine that has never seen a live
 market.
