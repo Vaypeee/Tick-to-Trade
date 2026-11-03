@@ -422,6 +422,37 @@ Positions are sequential — one at a time, opened on a signal and closed after
 the hold — because a backtest that can hold several overlapping positions
 hides which signal earned what.
 
+### Looking at a recording
+
+```bash
+cargo run --release --bin dashboard -- \
+  --market data/recordings/polymarket-<unix>.jsonl \
+  --labels data/recordings/labels-<unix>.jsonl
+```
+
+Writes one self-contained HTML file: the spread the book quoted, the trades
+that crossed it, the bursts of one-sided taking, and the moments a spectator
+on the public broadcast knew something. Where a press sits to the right of a
+surge, the book moved first — which is the whole question, drawn instead of
+tabulated.
+
+<p align="center">
+  <img alt="A timeline of a recording: the spread drawn as a shaded band, the mid as a staircase, trades as dots coloured by which side crossed, and a dashed marker where a burst of buying was detected." src="assets/dashboard.png" width="900">
+</p>
+
+*Shown on the synthetic recording in `tests/fixtures`, because it has a clear
+story: six trades lift the ask, then the touch steps up twice.*
+
+It is a **replay, never a live view**, and that is a measurement decision
+rather than a missing feature. A chart of the book beside the labelling page
+would turn an independent observation into an echo of the thing it is meant
+to be measured against, and nothing in the recording would afterwards show
+that it had happened. The labeller stays blind on purpose.
+
+Prices are drawn as a staircase: a quote holds until the next replaces it, so
+joining two with a sloped line would draw prices the book never showed —
+tidier, and wrong.
+
 ### Running the pipeline
 
 ```bash
@@ -489,7 +520,8 @@ Ordered so that the hypothesis is tested before the fast system is built.
 - [x] Aggressive-flow detection: net taking over a trailing window
 - [ ] Validation of that signal against labels from real matches — fills §5
 - [x] Continuation study: what following a surge pays, against reaction delay
-- [ ] Live terminal dashboard: feed state, latency histograms, captured edge
+- [x] Replay dashboard: book, flow and spectator presses on one timeline
+- [ ] A live operator view — for the pipeline, never beside the labeller
 - [ ] Order book state in the live pipeline, reusing the replay reconstruction
 - [x] Latency instrumentation of the recorder (HDR histograms) — fills §4
 - [ ] The same instrumentation along a live trading path, once one exists
