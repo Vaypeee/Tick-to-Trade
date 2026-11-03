@@ -17,8 +17,10 @@ use tick_to_trade::analysis::{
 
 const USAGE: &str = "\
 usage: analyse --market <file> [--sports <file> | --labels <file>] [options]
+       ... repeated, one pair per recording
 
-    --market <file>        a polymarket-*.jsonl recording
+    --market <file>        a polymarket-*.jsonl recording; repeat it to pool
+                           several games into one distribution
     --sports <file>        a sports-*.jsonl recording over the same window
     --labels <file>        a labels-*.jsonl recording over the same window
 
@@ -41,9 +43,15 @@ usage: analyse --market <file> [--sports <file> | --labels <file>] [options]
 With --labels: how far the order book ran ahead of an ordinary spectator.
 With --sports: how long after the feed showed something did the market move.
 With neither: what following the flow would have paid, against reaction delay.
+
+One game is not a sample. Give several pairs at once and the presses are
+pooled into a single distribution:
+
+    analyse --market m1.jsonl --labels l1.jsonl \
+            --market m2.jsonl --labels l2.jsonl
 ";
 
-/// What the market recording is being compared against.
+/// What a market recording is being compared against.
 #[derive(Debug, PartialEq)]
 enum Against {
     /// A polled data feed: how long until the market followed it.
@@ -52,10 +60,16 @@ enum Against {
     Labels(PathBuf),
 }
 
+/// One recording, and whatever it is being compared with.
 #[derive(Debug, PartialEq)]
-struct Args {
+struct Pair {
     market: PathBuf,
     against: Option<Against>,
+}
+
+#[derive(Debug, PartialEq)]
+struct Args {
+    pairs: Vec<Pair>,
     min_move: f64,
     horizon_secs: u64,
     window_secs: u64,
@@ -69,8 +83,7 @@ struct Args {
 impl Default for Args {
     fn default() -> Self {
         Self {
-            market: PathBuf::new(),
-            against: None,
+            pairs: Vec::new(),
             min_move: 0.02,
             horizon_secs: 120,
             window_secs: 30,
@@ -88,28 +101,39 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Args>, String
     let mut args = args;
 
     while let Some(arg) = args.next() {
+        let mut value = || {
+            args.next()
+                .ok_or_else(|| format!("`{arg}` expects a value"))
+        };
         match arg.as_str() {
             "-h" | "--help" => return Ok(None),
-            "--market" => parsed.market = args.next().ok_or("`--market` expects a path")?.into(),
+            // Each market opens a pair; the comparison that follows attaches
+            // to it, so several games read left to right as they were run.
+            "--market" => parsed.pairs.push(Pair {
+                market: value()?.into(),
+                against: None,
+            }),
             "--sports" | "--labels" => {
-                let path: PathBuf = args
-                    .next()
-                    .ok_or_else(|| format!("`{arg}` expects a path"))?
-                    .into();
-                if parsed.against.is_some() {
-                    return Err("pass either `--sports` or `--labels`, not both".into());
-                }
-                parsed.against = Some(if arg == "--sports" {
+                let path: PathBuf = value()?.into();
+                let against = if arg == "--sports" {
                     Against::Sports(path)
                 } else {
                     Against::Labels(path)
-                });
+                };
+                match parsed.pairs.last_mut() {
+                    Some(pair) if pair.against.is_none() => pair.against = Some(against),
+                    Some(_) => {
+                        return Err(format!(
+                            "`{arg}` follows a recording that already has one; give each \
+                             comparison its own `--market`"
+                        ));
+                    }
+                    None => return Err(format!("`{arg}` must follow a `--market`")),
+                }
             }
-            "--path" => parsed
-                .paths
-                .push(args.next().ok_or("`--path` expects a substring")?),
+            "--path" => parsed.paths.push(value()?),
             "--min-move" => {
-                let raw = args.next().ok_or("`--min-move` expects a value")?;
+                let raw = value()?;
                 parsed.min_move = raw
                     .parse()
                     .map_err(|_| format!("`--min-move` expects a number, got `{raw}`"))?;
@@ -117,35 +141,20 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Args>, String
                     return Err("`--min-move` is a probability move, so 0 < p < 1".into());
                 }
             }
-            "--hold-secs" => {
-                let raw = args.next().ok_or("`--hold-secs` expects a value")?;
-                parsed.hold_secs = raw
-                    .parse()
-                    .map_err(|_| format!("`--hold-secs` expects a number, got `{raw}`"))?;
-                if parsed.hold_secs == 0 {
-                    return Err("`--hold-secs` must be greater than zero".into());
-                }
+            "--window-secs" => {
+                parsed.window_secs = positive(&value()?, "--window-secs")?;
             }
-            "--fee-bps" => {
-                let raw = args.next().ok_or("`--fee-bps` expects a value")?;
-                parsed.fee_bps = raw
-                    .parse()
-                    .map_err(|_| format!("`--fee-bps` expects a number, got `{raw}`"))?;
-                if parsed.fee_bps < 0.0 {
-                    return Err("`--fee-bps` cannot be negative".into());
-                }
+            "--horizon-secs" => {
+                parsed.horizon_secs = positive(&value()?, "--horizon-secs")?;
             }
             "--surge-secs" => {
-                let raw = args.next().ok_or("`--surge-secs` expects a value")?;
-                parsed.surge_secs = raw
-                    .parse()
-                    .map_err(|_| format!("`--surge-secs` expects a number, got `{raw}`"))?;
-                if parsed.surge_secs == 0 {
-                    return Err("`--surge-secs` must be greater than zero".into());
-                }
+                parsed.surge_secs = positive(&value()?, "--surge-secs")?;
+            }
+            "--hold-secs" => {
+                parsed.hold_secs = positive(&value()?, "--hold-secs")?;
             }
             "--surge-size" => {
-                let raw = args.next().ok_or("`--surge-size` expects a value")?;
+                let raw = value()?;
                 let size: f64 = raw
                     .parse()
                     .map_err(|_| format!("`--surge-size` expects a number, got `{raw}`"))?;
@@ -154,32 +163,33 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Args>, String
                 }
                 parsed.surge_size = Some(size);
             }
-            "--window-secs" => {
-                let raw = args.next().ok_or("`--window-secs` expects a value")?;
-                parsed.window_secs = raw
+            "--fee-bps" => {
+                let raw = value()?;
+                parsed.fee_bps = raw
                     .parse()
-                    .map_err(|_| format!("`--window-secs` expects a number, got `{raw}`"))?;
-                if parsed.window_secs == 0 {
-                    return Err("`--window-secs` must be greater than zero".into());
-                }
-            }
-            "--horizon-secs" => {
-                let raw = args.next().ok_or("`--horizon-secs` expects a value")?;
-                parsed.horizon_secs = raw
-                    .parse()
-                    .map_err(|_| format!("`--horizon-secs` expects a number, got `{raw}`"))?;
-                if parsed.horizon_secs == 0 {
-                    return Err("`--horizon-secs` must be greater than zero".into());
+                    .map_err(|_| format!("`--fee-bps` expects a number, got `{raw}`"))?;
+                if parsed.fee_bps < 0.0 {
+                    return Err("`--fee-bps` cannot be negative".into());
                 }
             }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
 
-    if parsed.market.as_os_str().is_empty() {
-        return Err("`--market` is required".into());
+    if parsed.pairs.is_empty() {
+        return Err("at least one `--market` is required".into());
     }
     Ok(Some(parsed))
+}
+
+fn positive(raw: &str, flag: &str) -> Result<u64, String> {
+    let parsed: u64 = raw
+        .parse()
+        .map_err(|_| format!("`{flag}` expects a number, got `{raw}`"))?;
+    if parsed == 0 {
+        return Err(format!("`{flag}` must be greater than zero"));
+    }
+    Ok(parsed)
 }
 
 fn seconds(nanos: u64) -> f64 {
@@ -434,22 +444,35 @@ fn report_edge(surges: &[flow::Surge], quotes: &[align::Quote], asset: &str, arg
     println!("  by the time the surge is visible, and there is nothing to chase.");
 }
 
-fn analyse(args: &Args) -> Result<()> {
-    let market = replay::read(&args.market)?;
-    println!("== Recordings ==");
-    println!("  {}", describe(&args.market, &market));
+/// What one recording contributed, for pooling with the rest.
+#[derive(Default)]
+struct Contribution {
+    price: Leads,
+    flow: Leads,
+    presses: usize,
+}
 
-    let other = match args.against.as_ref() {
+fn merge(into: &mut Leads, from: Leads) {
+    into.leads.extend(from.leads);
+    into.unmatched += from.unmatched;
+}
+
+/// Works through one recording and whatever it is compared against.
+fn analyse_pair(pair: &Pair, args: &Args) -> Result<Contribution> {
+    let market = replay::read(&pair.market)?;
+    println!("\n== {} ==", describe(&pair.market, &market));
+
+    let other = match pair.against.as_ref() {
         Some(Against::Sports(path) | Against::Labels(path)) => {
             let records = replay::read(path)?;
-            println!("  {}", describe(path, &records));
+            println!("   {}", describe(path, &records));
             Some(records)
         }
         None => None,
     };
 
     let Some(market_span) = span_ns(&market) else {
-        bail!("the market recording is empty");
+        bail!("`{}` is empty", pair.market.display());
     };
     if let Some(other) = &other {
         let Some(other_span) = span_ns(other) else {
@@ -457,104 +480,127 @@ fn analyse(args: &Args) -> Result<()> {
         };
         let Some((from, to)) = overlap_ns(market_span, other_span) else {
             bail!(
-                "the recordings do not overlap in wall-clock time, so there is \
-                 nothing to compare; record both at once"
+                "`{}` does not overlap its comparison in wall-clock time, so there is \
+                 nothing to compare; record both at once",
+                pair.market.display()
             );
         };
-        println!("  overlap: {:.1} s", seconds(to - from));
+        println!("   overlap: {:.1} s", seconds(to - from));
     }
 
     let (quotes, agreement) = book::replay(&market);
-    println!("\n== Market ==");
-    println!("  {} mid-price moves rebuilt from the book", quotes.len());
+    print!("   {} mid-price moves", quotes.len());
     match agreement.rate() {
-        Some(rate) => println!(
-            "  book reconstruction agrees with the exchange touch on {:.1}% of {} updates",
-            rate * 100.0,
-            agreement.checked
-        ),
-        None => println!("  no exchange-reported touch to check the reconstruction against"),
+        Some(rate) => println!(", book agrees with the exchange on {:.1}%", rate * 100.0),
+        None => println!(", no exchange touch to check against"),
     }
     if agreement.skipped > 0 {
         println!(
-            "  {} delta(s) dropped for outcomes with no snapshot — subscribe to",
+            "   {} delta(s) dropped for outcomes with no snapshot — subscribe to every \
+             outcome of a market",
             agreement.skipped
         );
-        println!("  every outcome of a market, or its book cannot be rebuilt");
     }
 
     let Some(asset) =
-        reference_asset(&args.market).or_else(|| quotes.first().map(|quote| quote.asset.clone()))
+        reference_asset(&pair.market).or_else(|| quotes.first().map(|quote| quote.asset.clone()))
     else {
-        bail!("the market recording has no prices to work from");
+        bail!("`{}` has no prices to work from", pair.market.display());
     };
-    println!("  reference outcome {}", &asset[..asset.len().min(16)]);
 
-    match (args.against.as_ref(), other) {
+    let mut contribution = Contribution::default();
+
+    match (pair.against.as_ref(), other) {
         (Some(Against::Sports(_)), Some(other)) => {
             let found = observations(&other, &args.paths, 200);
-            println!("\n== Sports feed ==");
-            println!("  {} change(s) observed", found.len());
+            println!("   {} feed change(s)", found.len());
             if args.paths.is_empty() {
-                println!("  busiest paths (use --path to keep only the ones that are events):");
+                println!("   busiest paths (use --path to keep only the ones that are events):");
                 for (path, count) in change_frequency(&other, 200).iter().take(5) {
                     println!(
-                        "    {count:>4} x {}",
-                        path.chars().take(72).collect::<String>()
+                        "     {count:>4} x {}",
+                        path.chars().take(70).collect::<String>()
                     );
                 }
             }
-            if !found.is_empty() {
-                let mut uncertainty: Vec<u64> = found
-                    .iter()
-                    .map(|observation| observation.at_unix_ns - observation.from_unix_ns)
-                    .collect();
-                uncertainty.sort_unstable();
-                if let Some(median) = align::percentile(&uncertainty, 50.0) {
-                    println!(
-                        "  median detection uncertainty: {:.2} s (the price of polling)",
-                        seconds(median)
-                    );
-                }
-            }
-
             let horizon_ns = args.horizon_secs.saturating_mul(1_000_000_000);
             let matched = align::match_observations(&found, &quotes, args.min_move, horizon_ns);
             report(&matched, args.horizon_secs);
         }
         (Some(Against::Labels(_)), Some(other)) => {
             let found = presses(&other);
-            println!("\n== Spectator baseline ==");
-            println!("  {} press(es)", found.len());
+            contribution.presses = found.len();
+            println!("   {} press(es)", found.len());
 
             let window_ns = args.window_secs.saturating_mul(1_000_000_000);
-            println!("\n== What the market did, and when ==");
             let moves = align::significant_moves(&quotes, &asset, args.min_move);
-            let matched = align::leads(&found, &align::move_signals(&moves), window_ns);
+            contribution.price = align::leads(&found, &align::move_signals(&moves), window_ns);
             report_leads(
                 &format!("price moves of at least {:.3}", args.min_move),
-                &matched,
+                &contribution.price,
                 args.window_secs,
                 moves.len(),
             );
 
             println!();
             let bursts = describe_flow(&market, &quotes, &asset, args);
-            let flow_matched = align::leads(&found, &flow::surge_signals(&bursts), window_ns);
+            contribution.flow = align::leads(&found, &flow::surge_signals(&bursts), window_ns);
             report_leads(
                 &format!("net taking within {}s", args.surge_secs),
-                &flow_matched,
+                &contribution.flow,
                 args.window_secs,
                 bursts.len(),
             );
             report_edge(&bursts, &quotes, &asset, args);
         }
         _ => {
-            println!("\n== Order flow ==");
+            println!();
             let bursts = describe_flow(&market, &quotes, &asset, args);
             report_edge(&bursts, &quotes, &asset, args);
         }
     }
+
+    Ok(contribution)
+}
+
+fn analyse(args: &Args) -> Result<()> {
+    let mut pooled = Contribution::default();
+    let mut recordings = 0;
+
+    for pair in &args.pairs {
+        let contribution = analyse_pair(pair, args)?;
+        if contribution.presses > 0 {
+            recordings += 1;
+        }
+        pooled.presses += contribution.presses;
+        merge(&mut pooled.price, contribution.price);
+        merge(&mut pooled.flow, contribution.flow);
+    }
+
+    // One game is never a sample. Pooling is the whole reason several
+    // recordings can be given at once, so it is reported separately rather
+    // than left for the reader to add up by eye.
+    if recordings > 1 {
+        println!(
+            "\n\n== Pooled over {recordings} recording(s), {} press(es) ==",
+            pooled.presses
+        );
+        report_leads(
+            "price moves, pooled",
+            &pooled.price,
+            args.window_secs,
+            pooled.price.leads.len(),
+        );
+        report_leads(
+            "net taking, pooled",
+            &pooled.flow,
+            args.window_secs,
+            pooled.flow.leads.len(),
+        );
+    } else if args.pairs.len() > 1 {
+        println!("\n\nNothing to pool: only one recording contributed presses.");
+    }
+
     Ok(())
 }
 
@@ -597,7 +643,8 @@ mod tests {
     fn a_market_recording_stands_on_its_own() {
         // With nothing to compare against, the edge study still runs.
         let parsed = parse_args(args(&["--market", "a.jsonl"])).unwrap().unwrap();
-        assert!(parsed.against.is_none());
+        assert_eq!(parsed.pairs.len(), 1);
+        assert!(parsed.pairs[0].against.is_none());
         assert_eq!(parsed.hold_secs, 30);
         assert_eq!(parsed.fee_bps, 0.0);
     }
@@ -619,13 +666,13 @@ mod tests {
     }
 
     #[test]
-    fn parses_the_two_recordings_and_the_defaults() {
+    fn parses_one_pair_and_the_defaults() {
         let parsed = parse_args(args(&["--market", "m.jsonl", "--sports", "s.jsonl"]))
             .unwrap()
             .unwrap();
-        assert_eq!(parsed.market, PathBuf::from("m.jsonl"));
+        assert_eq!(parsed.pairs[0].market, PathBuf::from("m.jsonl"));
         assert_eq!(
-            parsed.against,
+            parsed.pairs[0].against,
             Some(Against::Sports(PathBuf::from("s.jsonl")))
         );
         assert_eq!(parsed.min_move, 0.02);
@@ -635,12 +682,37 @@ mod tests {
     }
 
     #[test]
-    fn labels_are_an_alternative_comparison_not_an_extra_one() {
-        let parsed = parse_args(args(&["--market", "m", "--labels", "l"]))
-            .unwrap()
-            .unwrap();
-        assert_eq!(parsed.against, Some(Against::Labels(PathBuf::from("l"))));
+    fn several_games_pair_up_in_the_order_they_are_given() {
+        let parsed = parse_args(args(&[
+            "--market", "m1", "--labels", "l1", "--market", "m2", "--labels", "l2",
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(parsed.pairs.len(), 2);
+        assert_eq!(parsed.pairs[0].market, PathBuf::from("m1"));
+        assert_eq!(
+            parsed.pairs[1].against,
+            Some(Against::Labels(PathBuf::from("l2")))
+        );
+    }
+
+    #[test]
+    fn a_recording_can_only_be_compared_with_one_thing() {
+        // Two comparisons for one market is a typo, not a request: silently
+        // keeping the first would analyse something other than what was asked.
         assert!(parse_args(args(&["--market", "m", "--labels", "l", "--sports", "s"])).is_err());
+    }
+
+    #[test]
+    fn a_market_may_stand_alone_among_pairs() {
+        let parsed = parse_args(args(&[
+            "--market", "m1", "--market", "m2", "--labels", "l2",
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(parsed.pairs.len(), 2);
+        assert!(parsed.pairs[0].against.is_none());
+        assert!(parsed.pairs[1].against.is_some());
     }
 
     #[test]

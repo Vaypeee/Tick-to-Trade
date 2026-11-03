@@ -502,8 +502,20 @@ cargo run --release --bin analyse -- \
 ```
 
 One game will not settle anything. Teamfights worth labelling happen a few
-times per game, so a usable sample is several games, and the tool says so
-when there are too few matched presses to read.
+times per game, so a usable sample is several games. Give the analysis all of
+them at once and the presses are pooled into a single distribution rather than
+left as four inconclusive reports:
+
+```bash
+cargo run --release --bin analyse -- \
+  --market data/recordings/polymarket-<game1>.jsonl \
+  --labels data/recordings/labels-<game1>.jsonl \
+  --market data/recordings/polymarket-<game2>.jsonl \
+  --labels data/recordings/labels-<game2>.jsonl
+```
+
+Each recording is reported on its own first, then pooled. The tool still says
+when there are too few matched presses to read anything into the percentiles.
 
 ## 9. Roadmap
 
