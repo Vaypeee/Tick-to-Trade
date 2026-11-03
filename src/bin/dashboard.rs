@@ -23,6 +23,8 @@ usage: dashboard --market <file> [--labels <file>] [options]
     --market <file>        a polymarket-*.jsonl recording
     --labels <file>        a labels-*.jsonl recording over the same window
     --out <file>           where to write the page (default: dashboard.html)
+    --outcome <id>         which outcome token to draw; the default is the
+                           first one the recording subscribed to
     --surge-secs <n>       window over which taking is netted (default: 5)
     --surge-size <n>       net size that counts as a surge; the default is
                            5x the median trade size in the recording
@@ -37,6 +39,7 @@ struct Args {
     market: PathBuf,
     labels: Option<PathBuf>,
     out: PathBuf,
+    outcome: Option<String>,
     surge_secs: u64,
     surge_size: Option<f64>,
 }
@@ -47,6 +50,7 @@ impl Default for Args {
             market: PathBuf::new(),
             labels: None,
             out: PathBuf::from("dashboard.html"),
+            outcome: None,
             surge_secs: 5,
             surge_size: None,
         }
@@ -67,6 +71,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Args>, String
             "--market" => parsed.market = value()?.into(),
             "--labels" => parsed.labels = Some(value()?.into()),
             "--out" => parsed.out = value()?.into(),
+            "--outcome" => parsed.outcome = Some(value()?),
             "--surge-secs" => {
                 let secs: u64 = value()?
                     .parse()
@@ -106,8 +111,11 @@ fn median(values: &mut [f64]) -> Option<f64> {
 fn run(args: &Args) -> Result<()> {
     let records = replay::read(&args.market)?;
     let (quotes, agreement) = book::replay(&records);
-    let Some(asset) =
-        reference_asset(&args.market).or_else(|| quotes.first().map(|quote| quote.asset.clone()))
+    let Some(asset) = args
+        .outcome
+        .clone()
+        .or_else(|| reference_asset(&args.market))
+        .or_else(|| quotes.first().map(|quote| quote.asset.clone()))
     else {
         bail!("the market recording has no prices to draw");
     };
@@ -232,8 +240,20 @@ fn run(args: &Args) -> Result<()> {
     std::fs::write(&args.out, page)
         .with_context(|| format!("cannot write `{}`", args.out.display()))?;
     println!("wrote {}", args.out.display());
-    if points.is_empty() {
-        println!("the recording held no quotes for that outcome, so the page is empty");
+    if points.len() < 2 {
+        // A dead end is only useful if it points somewhere, so say what the
+        // other outcomes of this market actually had.
+        println!(
+            "that outcome has {} quote(s), too few to draw",
+            points.len()
+        );
+        let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for quote in &quotes {
+            *counts.entry(quote.asset.as_str()).or_default() += 1;
+        }
+        for (other, count) in counts.iter().filter(|(other, _)| **other != asset) {
+            println!("  --outcome {} has {count}", &other[..other.len().min(16)]);
+        }
     }
     Ok(())
 }

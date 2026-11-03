@@ -31,6 +31,8 @@ usage: analyse --market <file> [--sports <file> | --labels <file>] [options]
                            change (default: 120)
     --path <substring>     only treat changes under matching paths as events;
                            repeatable, default: every change counts
+    --outcome <id>         which outcome token to analyse; the default is the
+                           first one the recording subscribed to
 
     --surge-secs <n>       window over which taking is netted (default: 5)
     --surge-size <n>       net size that counts as a surge; the default is
@@ -78,6 +80,7 @@ struct Args {
     hold_secs: u64,
     fee_bps: f64,
     paths: Vec<String>,
+    outcome: Option<String>,
 }
 
 impl Default for Args {
@@ -92,6 +95,7 @@ impl Default for Args {
             hold_secs: 30,
             fee_bps: 0.0,
             paths: Vec::new(),
+            outcome: None,
         }
     }
 }
@@ -132,6 +136,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Args>, String
                 }
             }
             "--path" => parsed.paths.push(value()?),
+            "--outcome" => parsed.outcome = Some(value()?),
             "--min-move" => {
                 let raw = value()?;
                 parsed.min_move = raw
@@ -502,11 +507,20 @@ fn analyse_pair(pair: &Pair, args: &Args) -> Result<Contribution> {
         );
     }
 
-    let Some(asset) =
-        reference_asset(&pair.market).or_else(|| quotes.first().map(|quote| quote.asset.clone()))
+    let Some(asset) = args
+        .outcome
+        .clone()
+        .or_else(|| reference_asset(&pair.market))
+        .or_else(|| quotes.first().map(|quote| quote.asset.clone()))
     else {
         bail!("`{}` has no prices to work from", pair.market.display());
     };
+    // Saying which outcome was analysed matters: a market has two, and the
+    // quiet one produces an empty report that reads like a quiet market.
+    println!("   outcome {}", &asset[..asset.len().min(16)]);
+    if quotes.iter().filter(|quote| quote.asset == asset).count() < 2 {
+        println!("   that outcome barely moved; --outcome can pick the other one");
+    }
 
     let mut contribution = Contribution::default();
 

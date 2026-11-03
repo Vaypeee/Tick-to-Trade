@@ -468,15 +468,26 @@ holds credentials and is git-ignored, as is `data/`; only
 
 What to do, in order, while a game is on.
 
-**1. Find the market and its outcome token ids.** Both of them: the channel
-pushes deltas for every outcome but only snapshots the ones subscribed to.
+**1. Find the market and its outcome token ids.**
 
 ```bash
-curl -s "https://gamma-api.polymarket.com/markets?closed=false&active=true&limit=400&order=volume24hr&ascending=false" | python -c "import json,sys; [print(m['question'][:60], json.loads(m['clobTokenIds'])) for m in json.load(sys.stdin) if 'league of legends' in (m['question']+m['slug']).lower() and m.get('clobTokenIds')]"
+cargo run --release --bin markets -- --search "league of legends"
 ```
 
-Put both ids in `polymarket.asset_ids`, with the outcome you think of as
-"blue" first — the label directions are expressed relative to it.
+```
+Will T1 win on 2026-11-03?
+  liquidity 296216   volume 24h 344860   spread 0.010
+  asset_ids = [
+    "594168809660711622466685284175436863367800796362014020567734896849",  # T1
+    "529368772184831086972124053157541862609622297808201424243087280694",  # Gen.G
+  ]
+```
+
+Paste both ids. **Both**: the channel pushes price changes for every outcome
+of a market but only snapshots the ones subscribed to, so recording one side
+leaves half the deltas with nothing to apply them to. The outcome you list
+first is the one label directions refer to, so put the side you think of as
+"blue" there.
 
 **2. Start the recorders, one process each, before kickoff.**
 
@@ -493,7 +504,8 @@ already recorded.
 `stalls=0` and `reconnects`. A non-zero stall count means the recorder was in
 the way of its own measurement.
 
-**5. Analyse.**
+**5. Analyse.** Add `--outcome <id>` if the side you want is not the one
+listed first in the recording.
 
 ```bash
 cargo run --release --bin analyse -- \
