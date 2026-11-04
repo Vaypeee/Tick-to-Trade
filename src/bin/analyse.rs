@@ -425,8 +425,8 @@ fn report_edge(
     println!("  Every fill is at the touch, so this is an upper bound: a thin");
     println!("  book will not absorb size at those prices.");
     println!(
-        "\n  {:>9}  {:>7}  {:>8}  {:>5}  {:>10}  {:>8}  {:>10}",
-        "react", "trials", "no quote", "cut", "median", "won", "worst"
+        "\n  {:>9}  {:>7}  {:>8}  {:>5}  {:>10}  {:>10}  {:>6}  {:>10}  {:>10}",
+        "react", "trials", "no quote", "cut", "median", "mean", "won", "best", "worst"
     );
 
     let hold_ns = args.hold_secs.saturating_mul(1_000_000_000);
@@ -449,11 +449,13 @@ fn report_edge(
             continue;
         }
         println!(
-            "  {delay_ms:>7}ms  {trials:>7}  {:>8}  {:>5}  {:>+10.4}  {:>7.0}%  {:>+10.4}",
+            "  {delay_ms:>7}ms  {trials:>7}  {:>8}  {:>5}  {:>+10.4}  {:>+10.4}  {:>5.0}%  {:>+10.4}  {:>+10.4}",
             result.skipped,
             result.truncated,
             result.median_net().unwrap_or(0.0),
+            result.mean_net().unwrap_or(0.0),
             100.0 * result.wins() as f64 / trials as f64,
+            result.best().unwrap_or(0.0),
             result.worst().unwrap_or(0.0),
         );
     }
@@ -466,8 +468,10 @@ fn report_edge(
     println!("  dropped rather than filled at a price the market never showed, so");
     println!("  trials + no quote + cut accounts for every surge.");
     println!("\n  Median is in probability points per unit of size, after costs.");
-    println!("  A median at or below zero means the move is already in the price");
-    println!("  by the time the surge is visible, and there is nothing to chase.");
+    println!("  The mean is what decides whether it makes money; the median says");
+    println!("  what a typical trial did. A negative median with a positive mean is");
+    println!("  a signal that pays only through its tail, and needs the size to");
+    println!("  survive the losses in between.");
 }
 
 /// What one recording contributed, for pooling with the rest.

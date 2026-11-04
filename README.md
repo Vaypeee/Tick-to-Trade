@@ -42,6 +42,26 @@ spectator: somebody watching the public broadcast with no advantage at all.
 That baseline is recorded by hand (§7), and the distance between it and the
 book moving is the quantity that decides whether anything here is tradeable.
 
+**H3 — the market overprices a near-certain win.** A team that looks decided
+gets bought anyway: at 0.90 it feels like free money, so the price goes there
+whether or not the game is really 90% over. If that is true, the other side is
+cheap, and the edge needs no speed at all — only patience and a bankroll that
+survives the losses.
+
+H3 needs neither a fast feed nor a spectator, which is why it can be answered
+properly: every resolved match is already a labelled example. `history`
+collects them and `calibrate` asks the only question that matters — across
+every past game, when a team could be bought at `p`, how often did it win? The
+first answer is in §5, and it is the first hypothesis here to survive contact
+with data.
+
+Two things it is not. A reversal is not an edge: buying at 0.10 and selling at
+0.20 doubles a stake, and the paths that decayed quietly to zero are invisible
+next to it, so the question is whether reversals happen *more often than the
+price implied*. And Kelly is not an edge either: it sizes one, and applied to
+a probability guessed rather than measured it bets confidently into a loss.
+Calibration first, sizing afterwards.
+
 The questions, in the order they can actually be answered:
 
 - By how much does the order book lead an ordinary spectator?
@@ -52,6 +72,10 @@ The questions, in the order they can actually be answered:
   from 0 ms upward (§5).
 - How long does the repricing window last, and what latency captures it?
 - Does any of it survive slippage on books this thin?
+- Is the price the probability, or does a near-certain win get overbought?
+  **Answered, and it is overbought.** Underdogs below 0.25 win more often than
+  their price implies and favourites above 0.65 win less, on thousands of
+  games (§5).
 
 ## 2. Architecture
 
@@ -151,11 +175,74 @@ acknowledgement — do not exist yet, and no figure is invented for them.
 
 ## 5. Results
 
-H2 now has an answer for the tradeable half of it, and the answer is no. The
-leading half — how far the book runs ahead of a spectator — does not yet have
-the sample to say. Seven things have been measured, and three of them are
-about this code rather than about the market.
+H3 is the first hypothesis here to survive contact with data, and H2's
+tradeable half is the first to be rejected by it. H2's leading half — how far
+the book runs ahead of a spectator — does not yet have the sample to say.
+Nine things have been measured, and three of them are about this code rather
+than about the market.
 
+**A near-certain win is overbought, and the other side is cheap.** Over 2,235
+resolved League of Legends games — the collection is still running, see below
+— each game entered each price bucket once, at its first trade there:
+
+| Price | Games | Implied | Realised | 95% interval |
+|---|---|---|---|---|
+| 0.00–0.05 | 889 | 2.5% | **4.3%** | 2.9 – 5.6% |
+| 0.05–0.10 | 890 | 7.5% | **10.6%** | 8.5 – 12.6% |
+| 0.10–0.15 | 968 | 12.5% | **16.2%** | 13.9 – 18.5% |
+| 0.25–0.60 | ~6,100 | — | calibrated | interval covers implied |
+| 0.85–0.90 | 1,003 | 87.5% | **83.4%** | 81.1 – 85.7% |
+| 0.90–0.95 | 968 | 92.5% | **88.0%** | 86.0 – 90.1% |
+| 0.95–1.00 | 919 | 97.5% | **94.3%** | 92.8 – 95.8% |
+
+Ten of the twenty buckets have an interval that excludes the price's own
+claim, and they are all in the tails. The middle of the book is calibrated,
+which is the reassurance that matters: a bias everywhere would be a bug in
+this code, a bias only at the extremes is a fact about the people trading.
+
+The intervals assume independent entries and are too narrow, because both
+sides of one game appear and the games of one series share a roster and a day.
+The tool says so each time it prints them.
+
+**Selling into the bounce destroys the edge.** The obvious way to trade the
+above is to buy cheap and take a quick double. It loses money, and the reason
+is structural: a side that eventually wins must pass through every price below
+1.00, so a target at 0.15 is reached by *every* eventual winner. Selling there
+hands back the positions that would have paid 1.00 and keeps the ones going to
+zero. Of entries at or below 0.10, 37% later traded at 0.15 while only 7.5%
+won, so most of what looks like a bounce is a position still on its way out.
+
+| Sell at | Reached it | Net per stake |
+|---|---|---|
+| 0.15 | 37.2% | −19.0% |
+| 0.20 | 29.7% | −12.7% |
+| 0.30 | 22.1% | −0.5% |
+| 0.50 | 15.1% | +15.9% |
+| hold to resolution | — | +15.4% |
+
+Holding wins. The finest buckets add one warning: at 0.00–0.01 the bias
+reverses — implied 0.5%, realised 0.2% — so the very bottom of the book is the
+one place the market is not generous. The edge starts around 0.02 and peaks
+near 0.07–0.11.
+
+**What this result still rests on, and it is one number.** The figures above
+charge a round-trip cost of 0.01. That assumption decides everything: the
+strategy pays +21.7% per stake at a cost of 0.002, +7.6% at 0.010, and breaks
+even around **0.013**. Measured spreads bracket that threshold rather than
+settling it. On liquid books priced between 0.04 and 0.16, read directly from
+the exchange, the median spread is **0.002** — 2.3% of the stake. On an
+in-play esports market it is **0.010 flat**, at both the median and the 90th
+percentile, across 205,702 quotes. Neither is the right sample: the first is
+politics and macro, the second never goes below 0.20. The missing measurement
+is an in-play esports book at five to fifteen cents, which exists only while a
+game is being decided, and which the recorder already captures without a line
+of new code.
+
+Two honest limits on top of that. The collection has reached 2,235 of about
+4,500 games, and the level has not settled: at 868 games the same cost gave
++15.4% per stake and at 2,235 it gives +7.6%. The *shape* of the calibration
+curve held steady across that, which is why it is reported and the
+profitability is not. Nothing should be sized on these figures yet.
 **Following the order flow does not pay.** Over a 104-minute recording of a
 live League of Legends Worlds match (Top Esports vs Invictus Gaming, BO5),
 110 surges of aggressive taking were detected — netted over 5 s, at a
@@ -505,6 +592,54 @@ and `--horizon-secs` how long to wait for the market to follow a feed change.
 every change counts, and the tool prints which paths churn most, so the choice
 can be made from evidence about the feed rather than a guess.
 
+### Collecting the match history
+
+H3 is about past games, so it needs them on disk. `history` walks Gamma for
+resolved events, keeps the per-game winner markets, and downloads every trade
+of each one.
+
+```bash
+cargo run --release --bin history
+cargo run --release --bin history --catalogue-only   # list the markets, fetch nothing
+cargo run --release --bin history --from 2026-01 --to 2026-06
+```
+
+It is resumable: a market whose sidecar says the download finished is skipped,
+so an interrupted run continues rather than starting over. For League of
+Legends this collects about 4,500 resolved games back to October 2025, which
+is when the per-game winner markets first appear — the months before hold
+League of Legends events, but only series and tournament winners.
+
+Two findings are baked into how it works. The CLOB's `prices-history` endpoint
+returns nothing for a resolved market, whatever interval it is asked for, so
+the price path is rebuilt from the trade log instead; trades are the better
+source anyway, since they carry size and counterparty. And Gamma refuses
+offsets past about 2100, which silently truncated the catalogue to its six
+most recent months, so the walk steps backwards one month at a time with
+`endDate` filters and names any month that still hits the limit.
+
+### Calibration: was the price the probability?
+
+```bash
+cargo run --release --bin calibrate
+cargo run --release --bin calibrate --bucket 0.01 --cost 0.002 --band 0.08
+```
+
+Two tables. The first buckets every game by the price it traded at and
+compares the implied probability against the realised one, with an interval,
+and prints the Kelly stake wherever an edge survives the cost. The second
+takes every entry below `--band` and scores a set of exit rules against what
+the price actually went on to do.
+
+`--cost` is the round-trip cost in probability points and it decides the
+answer, so it is a flag rather than a constant: measured spreads at these
+prices run from 0.001 on the deepest books to 0.010 on an in-play esports
+market, and the strategy breaks even somewhere around 0.013.
+
+Each game enters each price bucket once, at its first trade there. Counting
+every trade instead would weight the curve by how long a position lingered
+rather than by how often it paid.
+
 ### Paper trading a recording
 
 ```bash
@@ -743,6 +878,14 @@ building, and none has been measured yet.
 - [x] Paper execution and simulated PnL over a recording
 - [ ] VPS regions, only once latency is the binding constraint
 - [ ] Better fair-value model, measured against its latency cost
+- [x] Collector for resolved match history, trade by trade
+- [x] Calibration of price against realised frequency — fills §5
+- [x] Exit study: what selling into a bounce pays against holding
+- [ ] The spread at 0.05–0.15 on an in-play esports book, which is the one
+      number deciding whether H3 is tradeable
+- [ ] H3 over the whole catalogue, once the collection finishes
+- [ ] Kelly sizing on a measured edge, fractional and with a drawdown budget
+- [ ] Maker-side study: fill probability and adverse selection at the touch
 
 ## Disclaimer
 

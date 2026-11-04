@@ -72,6 +72,31 @@ impl Study {
         self.trials.iter().map(|trial| trial.net).sum()
     }
 
+    /// Mean net, in probability points.
+    ///
+    /// Reported next to the median because the two answer different
+    /// questions, and only this one decides whether the strategy makes money.
+    /// A signal that loses a tick most of the time and occasionally wins ten
+    /// has a median of minus one tick and a positive expectancy; judging it on
+    /// the median alone would throw it away.
+    pub fn mean_net(&self) -> Option<f64> {
+        (!self.trials.is_empty()).then(|| self.total_net() / self.trials.len() as f64)
+    }
+
+    /// Best net, in probability points. The counterpart to [`Study::worst`],
+    /// without which the table cannot show an upside tail at all.
+    pub fn best(&self) -> Option<f64> {
+        self.trials
+            .iter()
+            .map(|trial| trial.net)
+            .fold(None, |best, net| {
+                Some(match best {
+                    Some(value) if value > net => value,
+                    _ => net,
+                })
+            })
+    }
+
     pub fn worst(&self) -> Option<f64> {
         self.trials
             .iter()

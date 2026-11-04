@@ -6,6 +6,7 @@
 
 pub mod align;
 pub mod book;
+pub mod calibration;
 pub mod diff;
 pub mod edge;
 pub mod flow;
