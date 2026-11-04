@@ -126,9 +126,11 @@ pub enum Decision {
 
 /// The cost of getting in and back out at this touch.
 ///
-/// A round trip crosses the spread twice — once to take, once to give it
-/// back — and pays the fee on both notionals. Charging half a spread, or
-/// charging it once, is how a backtest invents an edge it will not see.
+/// Taking at the ask and giving it back at the bid costs the **full** spread,
+/// once: `bid - ask` is `-spread`. Both legs also pay the fee, on their own
+/// notional. Charging half a spread — the distance from mid to touch, as
+/// though the exit were free — is how a backtest invents an edge it will not
+/// see.
 pub fn round_trip_cost(touch: &Touch, fee_fraction: f64) -> f64 {
     touch.spread() + fee_fraction * (touch.ask + touch.bid)
 }

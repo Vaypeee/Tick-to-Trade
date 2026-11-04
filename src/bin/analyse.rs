@@ -404,7 +404,13 @@ fn describe_flow(
 
 /// Reports what following each surge would have paid, against how late you
 /// were to it.
-fn report_edge(surges: &[flow::Surge], quotes: &[align::Quote], asset: &str, args: &Args) {
+fn report_edge(
+    surges: &[flow::Surge],
+    quotes: &[align::Quote],
+    asset: &str,
+    observed_until: Option<u64>,
+    args: &Args,
+) {
     println!("\n== What following the flow would have paid ==");
     if surges.is_empty() {
         println!("  No surge to trade. Nothing to say about the edge.");
@@ -419,32 +425,46 @@ fn report_edge(surges: &[flow::Surge], quotes: &[align::Quote], asset: &str, arg
     println!("  Every fill is at the touch, so this is an upper bound: a thin");
     println!("  book will not absorb size at those prices.");
     println!(
-        "\n  {:>9}  {:>7}  {:>10}  {:>8}  {:>10}",
-        "react", "trials", "median", "won", "worst"
+        "\n  {:>9}  {:>7}  {:>8}  {:>5}  {:>10}  {:>8}  {:>10}",
+        "react", "trials", "no quote", "cut", "median", "won", "worst"
     );
 
     let hold_ns = args.hold_secs.saturating_mul(1_000_000_000);
     for delay_ms in edge::REACTION_LADDER_MS {
-        let result = edge::study(
+        let result = edge::study_until(
             surges,
             quotes,
             asset,
             delay_ms.saturating_mul(1_000_000),
             hold_ns,
             fee,
+            observed_until,
         );
         let trials = result.trials.len();
         if trials == 0 {
-            println!("  {delay_ms:>7}ms  {:>7}  {:>10}", 0, "-");
+            println!(
+                "  {delay_ms:>7}ms  {:>7}  {:>8}  {:>5}  {:>10}",
+                0, result.skipped, result.truncated, "-"
+            );
             continue;
         }
         println!(
-            "  {delay_ms:>7}ms  {trials:>7}  {:>+10.4}  {:>7.0}%  {:>+10.4}",
+            "  {delay_ms:>7}ms  {trials:>7}  {:>8}  {:>5}  {:>+10.4}  {:>7.0}%  {:>+10.4}",
+            result.skipped,
+            result.truncated,
             result.median_net().unwrap_or(0.0),
             100.0 * result.wins() as f64 / trials as f64,
             result.worst().unwrap_or(0.0),
         );
     }
+    println!(
+        "\n  {} surge(s) went in. `no quote` had no touch to trade against and",
+        surges.len()
+    );
+    println!("  `cut` would have been held past the end of the recording, where the");
+    println!("  last quote would have answered for every instant after it. Both are");
+    println!("  dropped rather than filled at a price the market never showed, so");
+    println!("  trials + no quote + cut accounts for every surge.");
     println!("\n  Median is in probability points per unit of size, after costs.");
     println!("  A median at or below zero means the move is already in the price");
     println!("  by the time the surge is visible, and there is nothing to chase.");
@@ -494,7 +514,7 @@ fn analyse_pair(pair: &Pair, args: &Args) -> Result<Contribution> {
         println!("   overlap: {:.1} s", seconds(to - from));
     }
 
-    let (quotes, agreement) = book::replay(&market);
+    let (quotes, agreement, observed) = book::replay_observed(&market);
     print!("   {} mid-price moves", quotes.len());
     match agreement.rate() {
         Some(rate) => println!(", book agrees with the exchange on {:.1}%", rate * 100.0),
@@ -567,12 +587,24 @@ fn analyse_pair(pair: &Pair, args: &Args) -> Result<Contribution> {
                 args.window_secs,
                 bursts.len(),
             );
-            report_edge(&bursts, &quotes, &asset, args);
+            report_edge(
+                &bursts,
+                &quotes,
+                &asset,
+                observed.get(&asset).copied(),
+                args,
+            );
         }
         _ => {
             println!();
             let bursts = describe_flow(&market, &quotes, &asset, args);
-            report_edge(&bursts, &quotes, &asset, args);
+            report_edge(
+                &bursts,
+                &quotes,
+                &asset,
+                observed.get(&asset).copied(),
+                args,
+            );
         }
     }
 

@@ -85,10 +85,14 @@ impl Study {
     }
 }
 
-/// Replays every surge as a round trip.
+/// Replays every surge as a round trip, bounded by the last quote in the
+/// series.
 ///
-/// `fee_fraction` is charged on both legs, as a fraction of notional. Leave it
-/// at zero only if the venue genuinely takes nothing.
+/// Prefer [`study_until`] on a real recording. The quote series carries a
+/// point only where the mid moved, so its last entry marks the last *change*,
+/// not the end of what was observed: a market that is quoted continuously but
+/// sits still looks here like a market that stopped. That difference threw
+/// away half the sample on the first live match it met.
 pub fn study(
     surges: &[Surge],
     quotes: &[Quote],
@@ -97,17 +101,43 @@ pub fn study(
     hold_ns: u64,
     fee_fraction: f64,
 ) -> Study {
+    study_until(surges, quotes, asset, react_ns, hold_ns, fee_fraction, None)
+}
+
+/// Replays every surge as a round trip.
+///
+/// `fee_fraction` is charged on both legs, as a fraction of notional. Leave it
+/// at zero only if the venue genuinely takes nothing.
+///
+/// `observed_until` is the last instant the asset was seen quoted at all, from
+/// [`crate::analysis::book::replay_observed`]. A hold reaching past it is
+/// dropped, because from there the last quote would stand in for data that
+/// does not exist. Passing `None` falls back to the last quote in the series,
+/// which is the last mid *change* and so discards every trial in a stretch
+/// where the touch was known and merely motionless.
+#[allow(clippy::too_many_arguments)]
+pub fn study_until(
+    surges: &[Surge],
+    quotes: &[Quote],
+    asset: &str,
+    react_ns: u64,
+    hold_ns: u64,
+    fee_fraction: f64,
+    observed_until: Option<u64>,
+) -> Study {
     let mut trials = Vec::new();
     let mut skipped = 0;
     let mut truncated = 0;
 
     // Past this instant the series says nothing, and the last quote would
     // silently answer for all of it.
-    let last_seen = quotes
-        .iter()
-        .rev()
-        .find(|quote| quote.asset == asset)
-        .map(|quote| quote.at_unix_ns);
+    let last_seen = observed_until.or_else(|| {
+        quotes
+            .iter()
+            .rev()
+            .find(|quote| quote.asset == asset)
+            .map(|quote| quote.at_unix_ns)
+    });
 
     for surge in surges.iter().filter(|surge| surge.asset == asset) {
         let entered_at = surge.at_unix_ns.saturating_add(react_ns);
@@ -257,6 +287,30 @@ mod tests {
         let charged = study(&[surge(100, 500.0)], &quotes(), "A", 0, 100, 0.01);
         let expected = free.trials[0].net - 0.01 * (0.42 + 0.45);
         assert!((charged.trials[0].net - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_motionless_but_still_quoted_market_keeps_its_trials() {
+        // The series stops at 300 because the mid stopped moving there, not
+        // because the market did: it stayed quoted until 10_000. A surge at
+        // 1_000 is perfectly tradeable against a known, unchanging touch.
+        let late = || vec![surge(1_000, 500.0)];
+
+        // Judged by the series alone, the hold looks like it runs past the
+        // end of the data, and the trial is thrown away.
+        let blind = study(&late(), &quotes(), "A", 0, 100, 0.0);
+        assert!(blind.trials.is_empty());
+        assert_eq!(blind.truncated, 1);
+
+        // Told how far the asset was actually observed, it is booked.
+        let seeing = study_until(&late(), &quotes(), "A", 0, 100, 0.0, Some(10_000));
+        assert_eq!(seeing.trials.len(), 1);
+        assert_eq!(seeing.truncated, 0);
+
+        // The guard still bites past the end of observation.
+        let beyond = study_until(&late(), &quotes(), "A", 0, 100, 0.0, Some(1_050));
+        assert!(beyond.trials.is_empty());
+        assert_eq!(beyond.truncated, 1);
     }
 
     #[test]

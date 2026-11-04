@@ -129,8 +129,22 @@ impl Agreement {
 /// leaves the touch untouched is not a repricing, and counting it as one
 /// would make the market look faster than it is.
 pub fn replay(records: &[Record]) -> (Vec<Quote>, Agreement) {
+    let (quotes, agreement, _) = replay_observed(records);
+    (quotes, agreement)
+}
+
+/// Replays the recording, also reporting the last instant each asset was seen
+/// with a complete touch.
+///
+/// The quote series is a step function carrying a point only where the mid
+/// moved, so its last entry can sit long before the recording ends while the
+/// touch stayed quoted and merely motionless — on the first live match
+/// recorded here, by an hour. Anything deciding how far the series can be
+/// trusted needs this end marker rather than the last change.
+pub fn replay_observed(records: &[Record]) -> (Vec<Quote>, Agreement, BTreeMap<String, u64>) {
     let mut books: BTreeMap<String, Book> = BTreeMap::new();
     let mut last_mid: BTreeMap<String, f64> = BTreeMap::new();
+    let mut observed: BTreeMap<String, u64> = BTreeMap::new();
     let mut quotes = Vec::new();
     let mut agreement = Agreement::default();
 
@@ -224,6 +238,9 @@ pub fn replay(records: &[Record]) -> (Vec<Quote>, Agreement) {
                 else {
                     continue;
                 };
+                // Noted before the dedup below, which is the whole point: the
+                // asset was quoted here whether or not the mid moved.
+                observed.insert(asset.clone(), record.t_unix_ns);
                 if last_mid.get(&asset).map(|previous| ticks(*previous)) == Some(ticks(mid)) {
                     continue;
                 }
@@ -241,7 +258,7 @@ pub fn replay(records: &[Record]) -> (Vec<Quote>, Agreement) {
         }
     }
 
-    (quotes, agreement)
+    (quotes, agreement, observed)
 }
 
 #[cfg(test)]

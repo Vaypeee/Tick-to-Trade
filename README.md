@@ -47,6 +47,9 @@ The questions, in the order they can actually be answered:
 - By how much does the order book lead an ordinary spectator?
 - Does an aggressive move continue far enough to clear fees and spread, or is
   the information already fully in the price by the time it is visible?
+  **Answered, on one match: already in the price.** The median move after a
+  surge is zero and the round trip pays a full spread, at every reaction delay
+  from 0 ms upward (§5).
 - How long does the repricing window last, and what latency captures it?
 - Does any of it survive slippage on books this thin?
 
@@ -148,18 +151,79 @@ acknowledgement — do not exist yet, and no figure is invented for them.
 
 ## 5. Results
 
-Neither hypothesis has an answer yet. H1 needs a sports feed that actually
-shows events and none has been found; H2 needs recordings of live matches with
-a spectator pressing keys, which is a matter of sitting through games. Four
-things have been measured in the meantime, and one of them is about this code
-rather than about the market.
+H2 now has an answer for the tradeable half of it, and the answer is no. The
+leading half — how far the book runs ahead of a spectator — does not yet have
+the sample to say. Seven things have been measured, and three of them are
+about this code rather than about the market.
+
+**Following the order flow does not pay.** Over a 104-minute recording of a
+live League of Legends Worlds match (Top Esports vs Invictus Gaming, BO5),
+110 surges of aggressive taking were detected — netted over 5 s, at a
+threshold of 200 units, five times the median trade. Entering with each surge
+and holding gives this, as median probability points per unit of size, after
+costs:
+
+| Hold | 0 ms | 250 ms | 1 s | 3 s | 10 s | 30 s |
+|---|---|---|---|---|---|---|
+| 5 s | −0.0100 | −0.0100 | −0.0100 | −0.0100 | −0.0100 | −0.0100 |
+| 30 s | −0.0100 | −0.0100 | −0.0100 | −0.0100 | −0.0100 | −0.0100 |
+| 300 s | −0.0100 | −0.0100 | −0.0100 | −0.0100 | −0.0100 | −0.0100 |
+
+Every cell is all 110 surges, bar two at the 300 s hold whose exit falls past
+the end of the recording. The median does not move. Holding time varies
+sixty-fold and reaction delay runs from zero to thirty seconds, and the answer
+is one cent of loss throughout.
+
+That constancy is the result, because it identifies where the cent goes. The
+quoted spread on this market was **exactly 0.01 at the 10th, 50th and 90th
+percentile** across 205,702 quote observations, and a round trip pays one full
+spread. So the median equals minus the cost, which means the median gross
+price move after a surge is **zero**. There is no edge decaying with latency;
+there is no edge. The surge is the market repricing, not a warning that it is
+about to.
+
+The `0 ms` column is what settles it. That is a perfect, physically impossible
+reaction, and it earns nothing more than reacting half a minute late. **No
+amount of latency engineering changes this result**, which is why the fast
+inference path in §10 is not being built. Only the dispersion responds to
+holding time: the win rate runs 0–5% at a 5 s hold and 12–14% at 300 s, while
+the worst case widens from −0.02 to −0.21. That is variance growing around an
+unchanged centre, not an edge appearing.
+
+This is one match on one market. It does not say that no flow signal exists on
+this venue; it says that this signal, defined this way, on this market, is
+worth less than the spread it has to cross.
+
+**Trade classification is correct, checked against the exchange.** Trades are
+classified as buyer- or seller-initiated by where they print against the
+touch, a Lee-Ready rule. The exchange also publishes its own `side` field, so
+the two can be compared: they agreed on **97.6% of 1,087 classifiable
+trades**. The flow result above rests on this rule, so it is verified rather
+than assumed.
+
+**A step function needs to carry its own end, and not carrying it cost half
+the sample.** The quote series holds a point only where the mid moved, so its
+last entry marks the last *change*, not the end of what was observed. On this
+recording the reference outcome stopped moving 2,617 s in and then sat still
+for **60 minutes while being quoted continuously** — 102,851 quote messages,
+the last one 2.1 s before the recording ends. The guard that stops a position
+being closed against data that does not exist read that stillness as missing
+data and discarded 54 of 110 surges, at every holding time including 5 s. The
+bias was not random either: the dropped trials were the settled, post-match
+ones, where a surge moves nothing and the round trip simply pays the spread,
+so throwing them away flattered the result. The replay now reports how far
+each asset was observed, separately from where it last moved, and the study is
+bounded by that. The sample doubled, the median did not budge, and the win
+rates fell. Nothing silently vanishes now: trials, no-quote and cut are all
+printed, and together they account for every surge.
 
 **The book reconstruction is correct, and the check earns its keep.**
 Replaying a 17-minute recording of a live Serie A market, the order book
 rebuilt from the snapshot and the deltas agreed with the exchange's own
-`best_bid` and `best_ask` on **100% of 14,866 updates**. The live pipeline
-will price the spread it crosses with this same code, so this is the one piece
-that is now known to be right rather than assumed to be.
+`best_bid` and `best_ask` on **100% of 14,866 updates**. On the Worlds
+recording above, agreement was **99.9% of 836 mid-price moves**. The live
+pipeline will price the spread it crosses with this same code, so this is the
+one piece that is now known to be right rather than assumed to be.
 
 The check then caught something on a second recording, where agreement fell to
 67%. The market channel pushes price changes for **every** outcome of a
@@ -195,23 +259,31 @@ of it an artifact. Each market move is now claimed by exactly one observation,
 the nearest before it, and contested matches are reported rather than counted.
 A noisy feed will otherwise manufacture whatever result it is asked for.
 
-*Sample: one match, one market, 1,020 s, 7,649 market frames, 24 stored feed
-responses, no sequence gaps and no recorder stalls.*
-
 **The recorder costs 19 µs.** Measured rather than assumed, and reported in
 §4. It matters here only as a floor: whatever the market turns out to do, this
 part of the chain is not what will have hidden it.
 
+*Samples: Worlds BO5 — one market, 6,227 s, 106,903 market records, 524 trades
+in the reference outcome, 6 spectator presses, no sequence gaps and no recorder
+stalls. The market stays open after the match ends, and the recording runs on
+with it. Serie A — one market, 1,020 s, 7,649 market frames, 24 stored feed
+responses.*
+
 Still to measure, with the sample size and the method stated:
 
-- how far the order book leads an ordinary spectator (H2),
-- whether a detected surge continues far enough to clear fees and spread,
+- how far the order book leads an ordinary spectator (H2). The Worlds
+  recording carries only **6 presses**, of which 2 to 3 had any market move
+  within 30 s, so the tool refuses to report percentiles over them and the
+  single clean figure it found — an 18.3 s lead — rests on one observation.
+  This needs several matches, not a better method.
+- whether the flow result above survives other markets, other sports and
+  wider spreads. The 99th percentile spread here was 0.03, so a surge would
+  have to carry three cents to pay for itself in the tail.
 - the repricing window, once a feed shows events (H1),
-- the net result after fees and slippage,
 - whether each hypothesis is validated, rejected, or holds only in some
   conditions.
 
-A negative result is a result and will be published as one.
+A negative result is a result, and the first one is published above.
 
 ## 6. Known limits
 
@@ -642,6 +714,11 @@ need 1.88. An unchecked minimum version is a number somebody typed once.
 ## 10. Roadmap
 
 Ordered so that the hypothesis is tested before the fast system is built.
+That ordering has now paid for itself: the continuation study (§5) found no
+edge to capture at any reaction delay, so the unticked pipeline items below —
+live order book state, a fair-value model, VPS regions — stay unticked by
+decision rather than by backlog. They are what a measured edge would justify
+building, and none has been measured yet.
 
 - [x] Recorder for the Polymarket CLOB market channel
 - [x] Recorder for a sports feed, provider-agnostic, measuring its own lag
@@ -653,7 +730,8 @@ Ordered so that the hypothesis is tested before the fast system is built.
 - [x] Tool to measure the lead of the book over the spectator baseline
 - [ ] The H2 measurement itself, over enough matches to mean something
 - [x] Aggressive-flow detection: net taking over a trailing window
-- [ ] Validation of that signal against labels from real matches — fills §5
+- [x] Validation of that signal against the market itself — fills §5
+- [ ] The same validation against labels, over enough matches to mean something
 - [x] Continuation study: what following a surge pays, against reaction delay
 - [x] Replay dashboard: book, flow and spectator presses on one timeline
 - [ ] A live operator view — for the pipeline, never beside the labeller
